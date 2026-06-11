@@ -1,0 +1,252 @@
+import { useRef, useState } from 'react'
+import axios from 'axios'
+
+function extractHashtags(text) {
+  return (text.match(/#\w+/g) || []).join(' ')
+}
+function stripHashtags(text) {
+  return text.replace(/#\w+/g, '').trim().replace(/\s{2,}/g, ' ')
+}
+
+function LinkedInMock({ text, imageUrl, onImageClick }) {
+  return (
+    <div className="li-mock">
+      <div className="li-mock-card">
+        <div className="li-mock-header">
+          <div className="li-mock-avatar">DC</div>
+          <div>
+            <div className="li-mock-name">Dr. Debasis Chatterji</div>
+            <div className="li-mock-title">Founder & CEO @Confiscore · 3rd+</div>
+            <div className="li-mock-time">Just now · 🌐</div>
+          </div>
+        </div>
+        <div className="li-mock-body">{text || ''}</div>
+        {imageUrl ? (
+          <div style={{ cursor: 'pointer' }} onClick={onImageClick}>
+            <img src={imageUrl} alt="Post visual" style={{ width: '100%', display: 'block' }} />
+          </div>
+        ) : (
+          <div className="li-mock-image-placeholder" onClick={onImageClick}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <path d="M21 15l-5-5L5 21"/>
+            </svg>
+            <span>Click to add image</span>
+          </div>
+        )}
+        <div className="li-mock-actions">
+          {['👍 Like', '💬 Comment', '↩ Repost', '➤ Send'].map(a => (
+            <button key={a} className="li-action-btn">{a}</button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function InstagramMock({ text, imageUrl, onImageClick }) {
+  const tags = extractHashtags(text || '')
+  const caption = stripHashtags(text || '')
+  return (
+    <div className="ig-mock">
+      <div className="ig-mock-card">
+        <div className="ig-mock-header">
+          <div className="ig-mock-avatar">CS</div>
+          <div className="ig-mock-username">confiscore</div>
+        </div>
+        <div className={`ig-mock-image ${!imageUrl ? 'empty' : ''}`} onClick={onImageClick}>
+          {imageUrl ? (
+            <img src={imageUrl} alt="Post visual" />
+          ) : (
+            <>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <circle cx="8.5" cy="8.5" r="1.5"/>
+                <path d="M21 15l-5-5L5 21"/>
+              </svg>
+              <span>Click to add image</span>
+            </>
+          )}
+        </div>
+        <div className="ig-mock-actions">
+          <svg viewBox="0 0 24 24" strokeWidth="1.5"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+          <svg viewBox="0 0 24 24" strokeWidth="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          <svg viewBox="0 0 24 24" strokeWidth="1.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </div>
+        <div className="ig-mock-likes">128 likes</div>
+        <div className="ig-mock-caption"><strong>confiscore </strong>{caption}</div>
+        {tags && <div className="ig-mock-hashtags">{tags}</div>}
+      </div>
+    </div>
+  )
+}
+
+export default function Preview({
+  content, platforms, previewPlatform, setPreviewPlatform,
+  imageUrl, setImageUrl, setImagePath, showToast,
+  description
+}) {
+  const fileInputRef = useRef()
+  const [aiUrl, setAiUrl] = useState(null)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiModel, setAiModel] = useState(null)
+  const [diagramUrl, setDiagramUrl] = useState(null)
+  const [diagramLoading, setDiagramLoading] = useState(false)
+
+  const handleImageClick = () => fileInputRef.current?.click()
+
+  const handleFileChange = async (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    const formData = new FormData()
+    formData.append('file', file)
+    try {
+      const { data } = await axios.post('/api/upload-image', formData)
+      setImageUrl(data.url)
+      setImagePath(data.path)
+      setShowPoster(false)
+      showToast('Image uploaded', 'success')
+    } catch {
+      showToast('Upload failed', 'error')
+    }
+    e.target.value = ''
+  }
+
+  const generateAIPoster = async () => {
+    if (!description) { showToast('Generate a post first', 'error'); return }
+    setAiLoading(true)
+    try {
+      const postText = content?.[previewPlatform] || ''
+      const { data } = await axios.post('/api/poster/ai', {
+        description,
+        platform: previewPlatform,
+        post_text: postText
+      })
+      setAiUrl(data.image)
+      setAiModel(data.model)
+      setImageUrl(data.image)
+      setImagePath(null)
+      showToast(`✦ AI poster ready (${data.model})`, 'success')
+    } catch (e) {
+      showToast(e.response?.data?.detail || 'AI generation failed', 'error')
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
+  const generateDiagram = async () => {
+    if (!description) { showToast('Generate a post first', 'error'); return }
+    setDiagramLoading(true)
+    try {
+      const postText = content?.[previewPlatform] || ''
+      const { data } = await axios.post('/api/poster/diagram', {
+        description,
+        post_text: postText,
+        platform: previewPlatform
+      })
+      setDiagramUrl(data.image)
+      setShowDiagram(true)
+      setImageUrl(data.image)
+      setImagePath(null)
+      showToast('✦ Diagram generated', 'success')
+    } catch (e) {
+      showToast(e.response?.data?.detail || 'Diagram generation failed', 'error')
+    } finally {
+      setDiagramLoading(false)
+    }
+  }
+
+  const text = content?.[previewPlatform] || content?.[platforms[0]] || ''
+  const displayImage = imageUrl
+
+  return (
+    <>
+      <div className="preview-section">
+        <div className="preview-header">
+          <span className="preview-title">// Platform Preview</span>
+          <div className="platform-tabs">
+            {platforms.map(p => (
+              <button
+                key={p}
+                className={`plat-tab ${p} ${previewPlatform === p ? 'active' : ''}`}
+                onClick={() => setPreviewPlatform(p)}
+              >
+                {p === 'li' ? 'LinkedIn' : 'Instagram'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFileChange} />
+
+        {previewPlatform === 'li'
+          ? <LinkedInMock text={text} imageUrl={displayImage} onImageClick={handleImageClick} />
+          : <InstagramMock text={text} imageUrl={displayImage} onImageClick={handleImageClick} />
+        }
+      </div>
+
+      {/* AI Poster generator */}
+      <div className="poster-section" style={{ marginTop: '1rem' }}>
+        <div className="poster-header">
+          <span className="poster-title">// AI Image Generation</span>
+          <span style={{ fontSize: 10, color: 'var(--white-muted)', fontFamily: 'var(--font-mono)' }}>
+            Imagen 3 · Gemini Flash
+          </span>
+        </div>
+        <div className="poster-btn-row">
+          <button
+            className={`btn-poster ${aiUrl && !aiLoading ? 'active' : ''}`}
+            onClick={generateAIPoster}
+            disabled={aiLoading || diagramLoading}
+            style={{ borderColor: '#38EF7D', color: aiUrl ? '#38EF7D' : undefined }}
+          >
+            {aiLoading ? '⟳ generating...' : '✦ AI generate'}
+          </button>
+          <button
+            className="btn-poster"
+            onClick={generateDiagram}
+            disabled={diagramLoading || aiLoading}
+            style={{ borderColor: '#B464FF', color: diagramUrl ? '#B464FF' : undefined }}
+          >
+            {diagramLoading ? '⟳ generating...' : '◈ diagram'}
+          </button>
+          {(aiUrl || diagramUrl) && (
+            <button
+              className="btn-poster"
+              onClick={() => {
+                setAiUrl(null); setDiagramUrl(null)
+                setImageUrl(null); setImagePath(null)
+              }}
+            >
+              ✕ clear
+            </button>
+          )}
+        </div>
+        {aiLoading && (
+          <div className="poster-placeholder">
+            <span style={{ color: '#38EF7D', fontSize: 13 }}>⟳ Generating with AI — this takes 10–20 seconds...</span>
+          </div>
+        )}
+        {!aiUrl && !aiLoading && !diagramUrl && (
+          <div className="poster-placeholder">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ opacity: 0.3 }}>
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <path d="M3 9h18M9 21V9"/>
+            </svg>
+            <span>AI Generate — Imagen 3 creates a real designed poster from your content</span>
+          </div>
+        )}
+        {aiUrl && !aiLoading && (
+          <div className="poster-img-wrap">
+            <div style={{ fontSize: 10, color: 'var(--white-muted)', marginBottom: 6, fontFamily: 'var(--font-mono)' }}>
+              ✦ {aiModel === 'imagen-3' ? 'Imagen 3' : 'Gemini Flash'} · click image to use as post visual
+            </div>
+            <img src={aiUrl} alt="AI generated poster" style={{ cursor: 'pointer' }}
+              onClick={() => { setImageUrl(aiUrl); setImagePath(null) }} />
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
