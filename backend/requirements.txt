@@ -1,10 +1,8 @@
 fastapi
 uvicorn[standard]
-groq
 python-dotenv
 python-multipart
 requests
-Pillow
 httpx
-google-genai
+anthropic
 cairosvg

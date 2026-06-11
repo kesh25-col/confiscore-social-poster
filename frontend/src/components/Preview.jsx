@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, useEffect } from 'react'
 import axios from 'axios'
 
 function extractHashtags(text) {
@@ -91,8 +91,16 @@ export default function Preview({
   const [aiUrl, setAiUrl] = useState(null)
   const [aiLoading, setAiLoading] = useState(false)
   const [aiModel, setAiModel] = useState(null)
+  const [aiFormat, setAiFormat] = useState('single')   // 'single' | 'carousel'
   const [diagramUrl, setDiagramUrl] = useState(null)
   const [diagramLoading, setDiagramLoading] = useState(false)
+
+  // Carousel is LinkedIn-only — fall back to single poster on Instagram
+  useEffect(() => {
+    if (previewPlatform !== 'li' && aiFormat === 'carousel') {
+      setAiFormat('single')
+    }
+  }, [previewPlatform, aiFormat])
 
   const handleImageClick = () => fileInputRef.current?.click()
 
@@ -121,13 +129,14 @@ export default function Preview({
       const { data } = await axios.post('/api/poster/ai', {
         description,
         platform: previewPlatform,
-        post_text: postText
+        post_text: postText,
+        format: aiFormat
       })
       setAiUrl(data.image)
       setAiModel(data.model)
       setImageUrl(data.image)
       setImagePath(null)
-      showToast(`✦ AI poster ready (${data.model})`, 'success')
+      showToast(aiFormat === 'carousel' ? '✦ Carousel ready' : '✦ AI poster ready', 'success')
     } catch (e) {
       showToast(e.response?.data?.detail || 'AI generation failed', 'error')
     } finally {
@@ -191,9 +200,39 @@ export default function Preview({
         <div className="poster-header">
           <span className="poster-title">// AI Image Generation</span>
           <span style={{ fontSize: 10, color: 'var(--white-muted)', fontFamily: 'var(--font-mono)' }}>
-            Imagen 3 · Gemini Flash
+            Claude · SVG
           </span>
         </div>
+
+        {/* Format selector: single poster vs carousel (carousel = LinkedIn only) */}
+        <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+          {[
+            { key: 'single', label: '▢ Single poster' },
+            ...(previewPlatform === 'li' ? [{ key: 'carousel', label: '▦ Carousel' }] : []),
+          ].map(opt => (
+            <button
+              key={opt.key}
+              onClick={() => setAiFormat(opt.key)}
+              disabled={aiLoading}
+              style={{
+                flex: 1,
+                fontSize: 12,
+                padding: '6px 10px',
+                borderRadius: 6,
+                cursor: aiLoading ? 'default' : 'pointer',
+                border: '1px solid',
+                borderColor: aiFormat === opt.key ? '#38EF7D' : 'rgba(255,255,255,0.15)',
+                background: aiFormat === opt.key ? 'rgba(56,239,125,0.12)' : 'transparent',
+                color: aiFormat === opt.key ? '#38EF7D' : 'var(--white-muted)',
+                fontFamily: 'var(--font-body)',
+                transition: 'all 0.15s',
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
         <div className="poster-btn-row">
           <button
             className={`btn-poster ${aiUrl && !aiLoading ? 'active' : ''}`}
@@ -201,7 +240,9 @@ export default function Preview({
             disabled={aiLoading || diagramLoading}
             style={{ borderColor: '#38EF7D', color: aiUrl ? '#38EF7D' : undefined }}
           >
-            {aiLoading ? '⟳ generating...' : '✦ AI generate'}
+            {aiLoading
+              ? '⟳ generating...'
+              : aiFormat === 'carousel' ? '✦ Generate carousel' : '✦ Generate poster'}
           </button>
           <button
             className="btn-poster"
@@ -225,7 +266,11 @@ export default function Preview({
         </div>
         {aiLoading && (
           <div className="poster-placeholder">
-            <span style={{ color: '#38EF7D', fontSize: 13 }}>⟳ Generating with AI — this takes 10–20 seconds...</span>
+            <span style={{ color: '#38EF7D', fontSize: 13 }}>
+              ⟳ {aiFormat === 'carousel'
+                ? 'Building carousel slides — this takes 20–40 seconds...'
+                : 'Designing poster — this takes 10–20 seconds...'}
+            </span>
           </div>
         )}
         {!aiUrl && !aiLoading && !diagramUrl && (
@@ -234,15 +279,15 @@ export default function Preview({
               <rect x="3" y="3" width="18" height="18" rx="2"/>
               <path d="M3 9h18M9 21V9"/>
             </svg>
-            <span>AI Generate — Imagen 3 creates a real designed poster from your content</span>
+            <span>Claude designs a real poster or carousel in SVG from your content</span>
           </div>
         )}
         {aiUrl && !aiLoading && (
           <div className="poster-img-wrap">
             <div style={{ fontSize: 10, color: 'var(--white-muted)', marginBottom: 6, fontFamily: 'var(--font-mono)' }}>
-              ✦ {aiModel === 'imagen-3' ? 'Imagen 3' : 'Gemini Flash'} · click image to use as post visual
+              ✦ Claude SVG · {aiFormat === 'carousel' ? 'carousel (scroll to view slides)' : 'click image to use as post visual'}
             </div>
-            <img src={aiUrl} alt="AI generated poster" style={{ cursor: 'pointer' }}
+            <img src={aiUrl} alt="AI generated visual" style={{ cursor: 'pointer', width: '100%' }}
               onClick={() => { setImageUrl(aiUrl); setImagePath(null) }} />
           </div>
         )}

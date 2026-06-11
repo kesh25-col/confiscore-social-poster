@@ -2,7 +2,7 @@ import axios from 'axios'
 
 const PLATFORM_NAMES = { li: 'LinkedIn', ig: 'Instagram' }
 const VOICE_NAMES = {
-  debasis: 'Dr. Debasis Voice',
+  debasis: 'Himaan Chatterji Voice',
   brand: 'Brand Voice',
   data: 'Data-Driven',
   inspiring: 'Inspiring'

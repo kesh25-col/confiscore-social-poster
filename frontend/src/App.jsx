@@ -317,7 +317,7 @@ export default function App() {
                     <div className="empty-state-icon">✦</div>
                     <p>Describe your post and hit <strong>Generate</strong></p>
                     <p style={{ marginTop: 6, fontSize: 12 }}>
-                      4 versions will appear — Dr. Debasis voice, Brand, Data-driven, Inspiring
+                      4 versions will appear — Himaan voice, Brand, Data-driven, Inspiring
                     </p>
                   </div>
                 )}

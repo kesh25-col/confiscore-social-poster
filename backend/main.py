@@ -1,5 +1,5 @@
 # ── Confiscore Social Poster — Backend ───────────────────────────────────────
-# Stack: FastAPI + Groq + Serper + SQLite + Pillow
+# Stack: FastAPI + Claude (Anthropic) + Serper + SQLite + cairosvg
 # Run: uvicorn main:app --reload
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Optional
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlencode
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request
@@ -21,48 +22,27 @@ try:
     from dotenv import load_dotenv
     load_dotenv(override=True)
     print("✓ Loaded .env")
-    print(">>> KEY:", os.environ.get("GROQ_API_KEY"))
 except ImportError:
     print("! python-dotenv not installed")
 
 from guidelines import get_guideline, get_all_guidelines, get_facts
 print("✓ Guidelines loaded")
 
-try:
-    from poster import generate_poster, TEMPLATE_LIST
-    print(f"✓ Poster generator ready — {len(TEMPLATE_LIST)} templates")
-except Exception as e:
-    print(f"! Poster generator failed: {e}")
-    generate_poster = None
+import anthropic
 
-from groq import Groq
-
-try:
-    from google import genai as google_genai
-    GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-    if GEMINI_KEY:
-        gemini_client = google_genai.Client(api_key=GEMINI_KEY)
-        GEMINI_MODEL  = "gemini-2.5-flash"
-        print("✓ Gemini ready")
-    else:
-        gemini_client = None
-        print("! Gemini not configured — add GEMINI_API_KEY to .env")
-except ImportError:
-    gemini_client = None
-    print("! google-genai not installed — run: pip install google-genai")
-
-GROQ_KEY    = os.environ.get("GROQ_API_KEY")
-SERPER_KEY  = os.environ.get("SERPER_API_KEY")
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
+SERPER_KEY    = os.environ.get("SERPER_API_KEY")
 LI_CLIENT_ID     = os.environ.get("LINKEDIN_CLIENT_ID", "")
 LI_CLIENT_SECRET = os.environ.get("LINKEDIN_CLIENT_SECRET", "")
 IG_APP_ID        = os.environ.get("INSTAGRAM_APP_ID", "")
 IG_APP_SECRET    = os.environ.get("INSTAGRAM_APP_SECRET", "")
 
-if not GROQ_KEY:
-    raise RuntimeError("GROQ_API_KEY missing from .env")
+if not ANTHROPIC_KEY:
+    raise RuntimeError("ANTHROPIC_API_KEY missing from .env")
 
-groq = Groq(api_key=GROQ_KEY)
-print("✓ Groq ready")
+claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+CLAUDE_MODEL = "claude-sonnet-4-6"   # best writing quality for brand voices + SVG
+print("✓ Claude ready (text + SVG posters)")
 print(f"{'✓' if SERPER_KEY else '!'} Serper {'ready' if SERPER_KEY else 'missing — web search disabled'}")
 print(f"{'✓' if LI_CLIENT_ID else '!'} LinkedIn {'configured' if LI_CLIENT_ID else 'not configured'}")
 print(f"{'✓' if IG_APP_ID else '!'} Instagram {'configured' if IG_APP_ID else 'not configured'}")
@@ -177,18 +157,35 @@ def web_search(query: str) -> str:
         print(f"Web search failed: {e}")
         return ""
 
-# ── Groq helper ────────────────────────────────────────────────────────────────
-def groq_complete(prompt: str, json_mode: bool = False) -> str:
-    kwargs = dict(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=1500,
-        temperature=0.7,
-    )
+# ── Claude text helper ─────────────────────────────────────────────────────────
+def claude_complete(prompt: str, json_mode: bool = False, temperature: float = 1.0,
+                    max_tokens: int = 1500) -> str:
+    messages = [{"role": "user", "content": prompt}]
+    # Prefill with "{" to force the model straight into a JSON object.
     if json_mode:
-        kwargs["response_format"] = {"type": "json_object"}
-    resp = groq.chat.completions.create(**kwargs)
-    return resp.choices[0].message.content
+        messages.append({"role": "assistant", "content": "{"})
+
+    last_err = None
+    for attempt in range(4):
+        try:
+            resp = claude.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                messages=messages,
+            )
+            text = resp.content[0].text
+            # Re-attach the prefilled "{" that the API strips from the response.
+            return ("{" + text) if json_mode else text
+        except anthropic.APIStatusError as e:
+            last_err = e
+            if e.status_code in (429, 500, 503, 529):
+                wait = 2 * (attempt + 1)
+                print(f"! Claude busy ({e.status_code}, attempt {attempt+1}/4), retrying in {wait}s...")
+                time.sleep(wait)
+                continue
+            raise
+    raise RuntimeError(f"Claude unavailable after retries: {last_err}")
 
 def parse_json_safe(raw: str) -> dict:
     clean = re.sub(r"```json|```", "", raw).strip()
@@ -227,15 +224,14 @@ Write a structured brief covering:
 
 Be specific and actionable. This brief goes directly to a post writer."""
 
-    return groq_complete(prompt)
+    return claude_complete(prompt)
 
 # ── Stage 2: Write 4 versions ──────────────────────────────────────────────────
-def write_version(brief: str, platforms: list[str], voice_key: str) -> dict:
+def write_version(brief: str, platforms: list[str], voice_key: str, raw_description: str = "") -> dict:
     guideline = get_guideline(voice_key)
     facts = get_facts()
     platform_keys = [p for p in ["li", "ig"] if p in platforms]
 
-    # Build platform-specific rules
     platform_rules = []
     if "li" in platforms:
         platform_rules.append(f"LINKEDIN RULES:\n{guideline['linkedin_rules']}")
@@ -244,10 +240,17 @@ def write_version(brief: str, platforms: list[str], voice_key: str) -> dict:
 
     keys_str = ", ".join(f'"{p}": "post text here"' for p in platform_keys)
 
+    raw_desc_block = f"""
+═══════════════════════════════════════════════════════════════
+RAW INPUT FROM USER (use these EXACT numbers and facts — do not paraphrase)
+═══════════════════════════════════════════════════════════════
+{raw_description}
+""" if raw_description else ""
+
     prompt = f"""{guideline['system_prompt']}
 
 {facts}
-
+{raw_desc_block}
 ═══════════════════════════════════════════════════════════════
 CONTENT BRIEF FROM PROMPT ENGINEER
 ═══════════════════════════════════════════════════════════════
@@ -259,12 +262,16 @@ PLATFORM-SPECIFIC RULES FOR THIS POST
 {chr(10).join(platform_rules)}
 
 ═══════════════════════════════════════════════════════════════
+CRITICAL: Use the EXACT statistics and numbers from the RAW INPUT above.
+Do not round, substitute, or invent numbers. The specificity is what makes
+the post credible and compelling.
+═══════════════════════════════════════════════════════════════
 OUTPUT FORMAT
 ═══════════════════════════════════════════════════════════════
 Respond ONLY with a valid JSON object. No markdown. No preamble. Nothing else.
 {{ {keys_str} }}"""
 
-    raw = groq_complete(prompt, json_mode=True)
+    raw = claude_complete(prompt, json_mode=True)
     return parse_json_safe(raw)
 
 # ── Generate endpoint ──────────────────────────────────────────────────────────
@@ -285,7 +292,7 @@ async def generate(req: GenerateRequest):
     versions = {}
     def write_one(voice_key):
         try:
-            result = write_version(brief, req.platforms, voice_key)
+            result = write_version(brief, req.platforms, voice_key, raw_description=req.description)
             return voice_key, result
         except Exception as e:
             print(f"Version {voice_key} failed: {e}")
@@ -409,9 +416,11 @@ async def linkedin_auth():
         "client_id": client_id,
         "redirect_uri": "http://localhost:8000/api/auth/linkedin/callback",
         "state": state,
-        "scope": "w_member_social r_liteprofile r_emailaddress"
+        # OpenID Connect scopes (modern). r_liteprofile/r_emailaddress are deprecated.
+        # Requires "Sign In with LinkedIn using OpenID Connect" + "Share on LinkedIn" products.
+        "scope": "openid profile email w_member_social"
     }
-    url = "https://www.linkedin.com/oauth/v2/authorization?" + "&".join(f"{k}={v}" for k, v in params.items())
+    url = "https://www.linkedin.com/oauth/v2/authorization?" + urlencode(params)
     return RedirectResponse(url)
 
 @app.get("/api/auth/linkedin/callback")
@@ -443,13 +452,14 @@ async def linkedin_callback(code: str, state: str):
         if not access_token:
             raise HTTPException(400, f"LinkedIn token exchange failed: {token_data}")
 
+        # OpenID Connect userinfo endpoint — returns sub (member id), name, email
         profile_resp = await client.get(
-            "https://api.linkedin.com/v2/me",
+            "https://api.linkedin.com/v2/userinfo",
             headers={"Authorization": f"Bearer {access_token}"}
         )
         profile = profile_resp.json()
-        user_id = profile.get("id", "")
-        username = f"{profile.get('localizedFirstName','')} {profile.get('localizedLastName','')}".strip()
+        user_id = profile.get("sub", "")
+        username = profile.get("name", "").strip() or "LinkedIn Account"
 
     with get_db() as conn:
         conn.execute(
@@ -660,83 +670,7 @@ async def post_now(req: PostNowRequest):
 
     return results
 
-# ── Status ─────────────────────────────────────────────────────────────────────
-
-# ── Poster generation ──────────────────────────────────────────────────────────
-class PosterRequest(BaseModel):
-    template: str       # stat | series | comparison
-    platform: str       # ig | li
-    data: dict
-
-@app.post("/api/poster")
-async def create_poster(req: PosterRequest):
-    if not generate_poster:
-        raise HTTPException(500, "Poster generator not available — check Pillow installation")
-    result = generate_poster(req.template, req.platform, req.data)
-    if not result:
-        raise HTTPException(500, "Poster generation failed")
-    return {"image": result}
-
-@app.post("/api/poster/auto")
-async def auto_poster(req: GenerateRequest):
-    """Auto-generate poster data from description using Groq, then render poster."""
-    if not generate_poster:
-        raise HTTPException(500, "Poster generator not available")
-
-    facts = get_facts()
-    platform = req.platforms[0] if req.platforms else 'li'
-
-    prompt = f"""You are creating data for a Confiscore social media poster.
-
-{facts}
-
-Description: "{req.description}"
-Platform: {platform} (li=LinkedIn landscape, ig=Instagram square)
-
-Choose the BEST template from these 15 options:
-
-1. stat — big number/cost/percentage as the hero. Data: headline, stat, stat_label, body, tag
-2. series — numbered educational list (like Dr. Debasis's Series posts). Data: number, title, points(5 items), footnote
-3. comparison — two columns left vs right. Data: title, left_label, left_pts(4), right_label, right_pts(4)
-4. quote — bold founder quote on dark bg. Data: quote, author, role
-5. score — shows the 0-1000 gauge. Data: score(int), band(critical/at-risk/stable/strong/champion), headline, description, use_case
-6. industry — targets a specific industry. Data: industry, headline, use_cases(4 items), stat, stat_label
-7. bias — cognitive bias educational post. Data: bias_name, definition, business_impact, how_confiscore_fixes, series_num
-8. reasons — "5 reasons" list format. Data: title, reasons(5 items), cta
-9. before_after — transformation story. Data: context, before_pts(4), after_pts(4), result
-10. timeline — journey/milestones. Data: title, milestones(list of [period, event] pairs, 4-5 items)
-11. did_you_know — surprising fact hook. Data: fact, explanation, source, cta
-12. feature — single product feature deep dive. Data: feature_name, what_it_does, how_it_works_pts(3), benefit
-13. case_study — customer success story. Data: industry, challenge, solution, result, metric
-14. myth_fact — debunking misconceptions. Data: topic, myths(4), facts(4)
-15. weekly_insight — regular insight series. Data: week_number, insight_title, key_thought, data_point, data_label, takeaway
-
-Pick the template that best matches the description. Generate realistic, specific Confiscore-branded content.
-All text should be DESCRIPTIVE but concise — 8-15 words per point, 10-15 words per headline.
-For case_study: challenge should be a full problem statement, solution should explain what Confiscore does, result should include a specific metric like "40% reduction in bad hires" or "3x faster screening".
-For stat: stat should be a bold number like "73%", stat_label should be descriptive like "of recruiters cite overconfidence as top hiring failure", body should be 2-3 sentences of context.
-For series: each point should be a complete insight, not just 1-2 words.
-Never use placeholder words like "Hiring" or "Confiscore" alone — always add context.
-Use real numbers from the facts above where possible.
-
-Respond ONLY with valid JSON, no markdown:
-{{
-  "template": "template_name_here",
-  "data": {{ ... all required fields for that template ... }}
-}}"""
-
-    try:
-        raw = groq_complete(prompt, json_mode=True)
-        parsed = parse_json_safe(raw)
-        template = parsed.get('template', 'stat')
-        data = parsed.get('data', {})
-        image = generate_poster(template, platform, data)
-        return {"image": image, "template": template, "data": data}
-    except Exception as e:
-        raise HTTPException(500, f"Auto poster failed: {{e}}")
-
-
-# ── Diagram generation (Gemini → SVG → PNG) ───────────────────────────────────
+# ── Diagram generation (Claude → SVG → PNG) ───────────────────────────────────
 class DiagramRequest(BaseModel):
     description: str
     post_text: str
@@ -744,9 +678,6 @@ class DiagramRequest(BaseModel):
 
 @app.post("/api/poster/diagram")
 async def generate_diagram(req: DiagramRequest):
-    if not gemini_client:
-        raise HTTPException(500, "Gemini not configured — add GEMINI_API_KEY to .env")
-
     W, H = (1200, 627) if req.platform == "li" else (1080, 1080)
 
     prompt = f"""You are an expert SVG infographic designer. Create a stunning, professional SVG diagram for a social media post about Confiscore — a B2B SaaS that measures candidate confidence on a 0-1000 scale to help companies make better hiring decisions.
@@ -777,20 +708,27 @@ DIAGRAM STRUCTURE — pick best for content:
 OUTPUT: Raw SVG only. No markdown fences. No explanation. Must start with <svg and end with </svg>. Complete and self-contained."""
 
     try:
-        response = gemini_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt
+        # Prefill with "<svg" so Claude outputs raw SVG and nothing else.
+        resp = claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=8000,
+            temperature=0.7,
+            messages=[
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "<svg"},
+            ],
         )
-        svg_text = response.text.strip()
+        svg_text = ("<svg" + resp.content[0].text).strip()
 
-        # Strip markdown if present
-        if "```svg" in svg_text:
-            svg_text = svg_text.split("```svg")[1].split("```")[0].strip()
-        elif "```" in svg_text:
-            svg_text = svg_text.split("```")[1].split("```")[0].strip()
+        # Strip any stray markdown fences just in case
+        if "```" in svg_text:
+            svg_text = svg_text.split("```")[0].strip()
+        # Keep only up to the closing tag
+        if "</svg>" in svg_text:
+            svg_text = svg_text[: svg_text.index("</svg>") + len("</svg>")]
 
         if not svg_text.startswith("<svg"):
-            raise HTTPException(500, f"Gemini returned invalid SVG: {svg_text[:100]}")
+            raise HTTPException(500, f"Claude returned invalid SVG: {svg_text[:100]}")
 
         try:
             import cairosvg
@@ -855,70 +793,125 @@ class AIPosterRequest(BaseModel):
     description: str
     platform: str = "li"
     post_text: Optional[str] = None
+    format: str = "single"   # "single" | "carousel"
 
-@app.post("/api/poster/ai")
-async def ai_poster(req: AIPosterRequest):
-    if not gemini_client:
-        raise HTTPException(500, "Gemini not configured — add GEMINI_API_KEY to .env")
+SVG_BRAND_BLOCK = """COMPANY: Confiscore — B2B SaaS that measures human confidence on a 0–1000 scale using
+patented Valence-Arousal psycho-technology. Used by HR teams, recruiters, and business leaders.
 
-    aspect       = "16:9" if req.platform == "li" else "1:1"
-    platform_str = "LinkedIn landscape (1200×627px)" if req.platform == "li" else "Instagram square (1080×1080px)"
+BRAND DESIGN SYSTEM (follow precisely):
+- Background: deep navy gradient using <linearGradient> from #070B1B to #0D1433
+- Primary accent: electric green #38EF7D — use boldly on hero numbers/headlines
+- Secondary accents: electric blue #3B5BDB, blue-white #99ABFF
+- A thin 8px accent bar down the left edge of each panel
+- Typography: font-family="system-ui, -apple-system, Segoe UI, sans-serif" ONLY (no external fonts)
+- Subtle geometric accents only: thin lines, concentric circles, faint dot grid — never photos or people
+- Use the EXACT numbers from the content. Never invent data."""
 
-    prompt = f"""Design a premium professional social media infographic poster for Confiscore.
 
-COMPANY: Confiscore — B2B SaaS that measures human confidence on a 0–1000 scale using patented Valence-Arousal psycho-technology. Used by HR teams, recruiters, and business leaders.
+def _build_single_prompt(req: AIPosterRequest, W: int, H: int, platform_str: str) -> str:
+    return f"""You are a world-class graphic designer who builds polished marketing posters in raw SVG.
+Design a premium social media poster for Confiscore as a complete, self-contained SVG.
+
+{SVG_BRAND_BLOCK}
 
 CONTENT TO VISUALIZE:
 {req.description}
 
 {f"POST CONTEXT:{chr(10)}{req.post_text[:400]}" if req.post_text else ""}
 
-DESIGN REQUIREMENTS:
-- Background: very deep navy blue gradient (#070B1B → #0D1433)
-- Primary accent: electric green (#38EF7D) — use boldly for the hero number or headline
-- Secondary: electric blue (#3B5BDB), bright blue-white (#99ABFF)
-- Typography: large bold modern sans-serif headlines, clean body text — strong hierarchy
-- One dominant focal element (large stat, bold number, or powerful headline)
-- Subtle glowing halo behind the hero element
-- Abstract geometric accents (circles, lines, gradients — no people, no photos)
-- Include these brand elements somewhere: "Confiscore", "confiscore.com", "Confidence Is the New KPI"
-- Format: {platform_str}
+CANVAS: {W}x{H}px ({platform_str}). Set the root <svg> width="{W}" height="{H}" viewBox="0 0 {W} {H}".
 
-STYLE REFERENCE: Think Bloomberg data graphic meets premium SaaS marketing — analytical, trustworthy, visually striking. Dark background, glowing accents, clean typography. High contrast. Minimal clutter."""
+LAYOUT:
+- Strong hierarchy: ONE dominant focal element (a huge stat 110-150px, or a bold headline 60-72px)
+- If the content has multiple stats, lay them out as 2-4 clean rounded cards (rx=16) with rgba fills
+  and a thin glowing accent border; each big number in accent color with a small label under it
+- A soft radial glow blob behind the hero element (~18% opacity)
+- Generous padding (≈60px). Fill the canvas; no large empty zones, no clutter
+- Brand footer: "Confiscore" bottom-left in white bold 24px; "confiscore.com" bottom-right in accent color
+
+STYLE: Bloomberg data graphic meets premium SaaS marketing — analytical, trustworthy, high contrast.
+
+OUTPUT: Raw SVG only. Start with <svg and end with </svg>. No markdown, no explanation."""
+
+
+def _build_carousel_prompt(req: AIPosterRequest) -> str:
+    return f"""You are a world-class graphic designer who builds LinkedIn carousels in raw SVG.
+Design a premium multi-slide carousel for Confiscore as ONE complete, self-contained SVG with
+all slides stacked vertically.
+
+{SVG_BRAND_BLOCK}
+
+CONTENT TO TURN INTO A CAROUSEL:
+{req.description}
+
+{f"POST CONTEXT:{chr(10)}{req.post_text[:400]}" if req.post_text else ""}
+
+CAROUSEL STRUCTURE:
+- Each slide is exactly 1080x1080px (Instagram/LinkedIn square)
+- Decide the slide count from the content: 1 cover slide + one slide per key stat/point + 1 CTA slide
+  (typically 4-6 slides total)
+- Stack them vertically using <g transform="translate(0, N*1080)"> for slide index N
+- Root <svg>: width="1080" height="{{TOTAL}}" viewBox="0 0 1080 {{TOTAL}}" where TOTAL = slideCount * 1080
+
+SLIDE DESIGN:
+- COVER slide: brand eyebrow label, a bold 2-line headline (90-116px), a one-line subtext,
+  a short "Swipe to see the numbers →" hint, decorative concentric circles
+- STAT slides: an eyebrow like "01 / TEAM CONFIDENCE", a giant number (260-280px) in accent green,
+  a bold white stat label, one line of grey context, a small "confiscore.com" badge
+- For a before→after stat, show both numbers with an arrow (e.g. 550 → 700+), the lower one muted
+- CTA slide (last): the closing stat or message + a filled accent button "Try Confiscore today →"
+- Every slide: navy background, the 8px left accent bar, consistent 72px left margin
+
+Replace {{TOTAL}} with the real computed pixel height. Use the EXACT numbers from the content.
+
+OUTPUT: Raw SVG only. Start with <svg and end with </svg>. No markdown, no explanation."""
+
+
+@app.post("/api/poster/ai")
+async def ai_poster(req: AIPosterRequest):
+    # Carousel is LinkedIn-only; Instagram always gets a single poster.
+    is_carousel = req.format == "carousel" and req.platform == "li"
+
+    if is_carousel:
+        prompt = _build_carousel_prompt(req)
+        render_kwargs = {}            # let cairosvg use the SVG's intrinsic (tall) size
+        max_tokens = 16000
+    else:
+        W, H = (1200, 627) if req.platform == "li" else (1080, 1080)
+        platform_str = "LinkedIn landscape" if req.platform == "li" else "Instagram square"
+        prompt = _build_single_prompt(req, W, H, platform_str)
+        render_kwargs = {"output_width": W, "output_height": H}
+        max_tokens = 8000
 
     try:
-        from google.genai import types as gt
-
-        # Primary: Imagen 3 — highest quality
-        try:
-            resp = gemini_client.models.generate_images(
-                model="imagen-3.0-generate-001",
-                prompt=prompt,
-                config=gt.GenerateImagesConfig(
-                    number_of_images=1,
-                    aspect_ratio=aspect,
-                    safety_filter_level="block_some",
-                    person_generation="dont_allow",
-                )
-            )
-            b64 = base64.b64encode(resp.generated_images[0].image.image_bytes).decode()
-            return {"image": f"data:image/png;base64,{b64}", "model": "imagen-3"}
-        except Exception as e1:
-            print(f"Imagen 3 failed ({e1}), falling back to Gemini flash image gen...")
-
-        # Fallback: Gemini 2.0 Flash image generation
-        resp = gemini_client.models.generate_content(
-            model="gemini-2.0-flash-preview-image-generation",
-            contents=prompt,
-            config=gt.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"])
+        resp = claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=max_tokens,
+            temperature=0.8,
+            messages=[
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "<svg"},
+            ],
         )
-        for part in resp.candidates[0].content.parts:
-            if part.inline_data is not None:
-                return {
-                    "image": f"data:{part.inline_data.mime_type};base64,{part.inline_data.data}",
-                    "model": "gemini-flash"
-                }
-        raise Exception("No image returned by Gemini")
+        svg_text = ("<svg" + resp.content[0].text).strip()
+
+        if "```" in svg_text:
+            svg_text = svg_text.split("```")[0].strip()
+        if "</svg>" in svg_text:
+            svg_text = svg_text[: svg_text.index("</svg>") + len("</svg>")]
+
+        if not svg_text.startswith("<svg"):
+            raise HTTPException(500, f"Claude returned invalid SVG: {svg_text[:100]}")
+
+        import cairosvg
+        png_bytes = cairosvg.svg2png(bytestring=svg_text.encode(), **render_kwargs)
+        b64 = base64.b64encode(png_bytes).decode()
+        return {
+            "image": f"data:image/png;base64,{b64}",
+            "model": "claude-svg",
+            "format": req.format,
+            "svg": svg_text,
+        }
 
     except HTTPException:
         raise
@@ -932,7 +925,7 @@ async def status():
         connections = {r["platform"]: r["username"] for r in
                       conn.execute("SELECT platform, username FROM connections").fetchall()}
     return {
-        "groq": "ready",
+        "claude": "ready",
         "serper": "ready" if SERPER_KEY else "not configured",
         "linkedin_oauth": "configured" if LI_CLIENT_ID else "not configured",
         "instagram_oauth": "configured" if IG_APP_ID else "not configured",
