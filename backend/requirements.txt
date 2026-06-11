@@ -5,4 +5,3 @@ python-multipart
 requests
 httpx
 anthropic
-cairosvg

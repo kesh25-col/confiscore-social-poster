@@ -139,12 +139,12 @@ WHAT HE NEVER DOES
 - Never rounds numbers vaguely — uses exact figures from the data
 """,
     "linkedin_rules": """
-- 5-8 short paragraphs, each 1-2 sentences, with line breaks between ALL of them
-- Open with a question or shocking stat — hook must land in the first line
-- Use emojis to mark data points: 📊 for stats, ✅ for benefits, 🎯 for outcomes
-- Include 3-5 hashtags at the very end on their own line
-- Always end with a CTA: "Try it free at confiscore.com" or "DM me to learn more"
-- Use exact numbers from the raw data — never round or generalise
+- HARD LIMIT: 80 words total for the body. Compact and punchy — not an essay.
+- Structure: 1-line hook → 2-4 emoji stat bullets (📊/✅/🎯) → 1-line takeaway → short CTA
+- Each line is ONE short sentence. Generous line breaks. No multi-sentence paragraphs.
+- 3-4 hashtags on the final line.
+- End with a short CTA: "Try it free → confiscore.com"
+- Use exact numbers from the raw data — never round or generalise.
 """,
     "instagram_rules": """
 - 4-6 sentences with line breaks for readability
@@ -219,15 +219,15 @@ NEVER:
 - Start with "Using Confiscore..." — lead with the outcome, not the tool
 """,
     "linkedin_rules": """
-- 2-4 short paragraphs, each 1-2 sentences, with line breaks between
-- NO platitude openers — lead with a number or a contrast statement
-- 0-2 hashtags max (#HRTech or #ConfidenceIsTheNewKPI only)
-- No emojis
-- End with a sharp insight or confiscore.com — not a generic CTA
+- HARD LIMIT: 60 words total. 3 short paragraphs maximum, each 1 sentence.
+- Lead with a number or a contrast statement — NO platitude openers.
+- Line breaks between paragraphs. No walls of text.
+- 0-2 hashtags max (#HRTech or #ConfidenceIsTheNewKPI only). No emojis.
+- End with a sharp insight or confiscore.com — not a generic CTA.
 """,
     "instagram_rules": """
-- 3-5 sentence caption body — hook must land in the first line
-- 6-8 hashtags: #Confiscore #ConfidenceIsTheNewKPI #HRTech #PeopleAnalytics + topic-specific
+- 3-4 short sentences max — hook must land in the first line
+- 5-7 hashtags: #Confiscore #ConfidenceIsTheNewKPI #HRTech #PeopleAnalytics + topic-specific
 - 1-2 emojis max, used for emphasis not decoration
 """
 }
@@ -302,16 +302,15 @@ specific claim. If a sentence has no number or specific, cut it or
 replace the vague part with something concrete.
 """,
     "linkedin_rules": """
-- Open with a number or percentage — this is non-negotiable
-- 3-5 sentences total
-- Use line breaks after the opening stat for visual impact
-- 0-2 hashtags — only highly relevant ones
-- No emojis
-- End with a Confiscore fact or product URL
+- HARD LIMIT: 70 words total. Open with a number or percentage — non-negotiable.
+- 4-5 short lines max. You may use 📊 emoji bullets for 2-3 of the key stats.
+- Line breaks after the opening stat for visual impact. No long paragraphs.
+- 0-2 hashtags — only highly relevant ones.
+- End with one crisp line + confiscore.com.
 """,
     "instagram_rules": """
 - Open with a large, bold-worthy statistic
-- 3-5 sentences building the argument
+- 3-4 short sentences building the argument
 - 6-8 hashtags: #DataDrivenHR #PeopleAnalytics #HRTech + brand tags
 - 1 emoji max — only if it adds visual clarity (📊 for data posts works well)
 """
@@ -415,15 +414,13 @@ If at any point the post starts to sound like a motivational poster —
 stop and rewrite that sentence to be more specific and more human.
 """,
     "linkedin_rules": """
-- 3-5 sentences — allow the story to breathe but don't ramble
-- Use a line break after the human opening for dramatic effect
-- 0-2 hashtags — this voice doesn't need hashtags to land
-- No emojis — the words should do the emotional work
-- End with an insight, not a hard sell
-- The product reference should feel like a natural conclusion
+- HARD LIMIT: 65 words total. 3-4 short sentences — tight, not rambling.
+- One human-moment opening line, a line break, then the insight, then a quiet close.
+- 0-2 hashtags — this voice doesn't need hashtags to land. No emojis.
+- End with an insight, not a hard sell. Product reference feels like a natural conclusion.
 """,
     "instagram_rules": """
-- 3-5 sentences for the caption body
+- 3-4 short sentences for the caption body
 - The hook must work in the first 2 lines (before "more" is clicked)
 - 5-7 hashtags: mix of human-interest and professional
   Examples: #Leadership #HiringTips #WorkCulture #Confiscore

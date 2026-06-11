@@ -160,10 +160,9 @@ def web_search(query: str) -> str:
 # ── Claude text helper ─────────────────────────────────────────────────────────
 def claude_complete(prompt: str, json_mode: bool = False, temperature: float = 1.0,
                     max_tokens: int = 1500) -> str:
-    messages = [{"role": "user", "content": prompt}]
-    # Prefill with "{" to force the model straight into a JSON object.
+    user_content = prompt
     if json_mode:
-        messages.append({"role": "assistant", "content": "{"})
+        user_content += "\n\nRespond with ONLY the raw JSON object — no markdown fences, no preamble, no explanation."
 
     last_err = None
     for attempt in range(4):
@@ -172,11 +171,9 @@ def claude_complete(prompt: str, json_mode: bool = False, temperature: float = 1
                 model=CLAUDE_MODEL,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                messages=messages,
+                messages=[{"role": "user", "content": user_content}],
             )
-            text = resp.content[0].text
-            # Re-attach the prefilled "{" that the API strips from the response.
-            return ("{" + text) if json_mode else text
+            return resp.content[0].text
         except anthropic.APIStatusError as e:
             last_err = e
             if e.status_code in (429, 500, 503, 529):
@@ -193,6 +190,16 @@ def parse_json_safe(raw: str) -> dict:
     if match:
         clean = match.group(0)
     return json.loads(clean)
+
+def extract_svg(raw: str) -> str:
+    """Pull the <svg>...</svg> block out of a model response, ignoring any prose/fences."""
+    match = re.search(r'<svg.*?</svg>', raw, re.DOTALL | re.IGNORECASE)
+    return match.group(0).strip() if match else ""
+
+def svg_to_data_url(svg_text: str) -> str:
+    """Return an SVG as a base64 data URL — the browser renders SVG natively, no native libs needed."""
+    b64 = base64.b64encode(svg_text.encode("utf-8")).decode()
+    return f"data:image/svg+xml;base64,{b64}"
 
 # ── Stage 1: Engineer prompt ───────────────────────────────────────────────────
 def engineer_prompt(description: str, platforms: list[str], search_results: str) -> str:
@@ -262,9 +269,11 @@ PLATFORM-SPECIFIC RULES FOR THIS POST
 {chr(10).join(platform_rules)}
 
 ═══════════════════════════════════════════════════════════════
-CRITICAL: Use the EXACT statistics and numbers from the RAW INPUT above.
-Do not round, substitute, or invent numbers. The specificity is what makes
-the post credible and compelling.
+CRITICAL RULES:
+1. Use the EXACT statistics from the RAW INPUT. Never round, substitute, or invent numbers.
+2. BE COMPACT. Obey the word limit in the platform rules above — a scannable post in seconds,
+   NOT an essay. If you wrote more than the limit, cut it down before responding.
+3. Do NOT restate the same stat in multiple ways. Each number appears once.
 ═══════════════════════════════════════════════════════════════
 OUTPUT FORMAT
 ═══════════════════════════════════════════════════════════════
@@ -708,40 +717,17 @@ DIAGRAM STRUCTURE — pick best for content:
 OUTPUT: Raw SVG only. No markdown fences. No explanation. Must start with <svg and end with </svg>. Complete and self-contained."""
 
     try:
-        # Prefill with "<svg" so Claude outputs raw SVG and nothing else.
         resp = claude.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=8000,
             temperature=0.7,
-            messages=[
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": "<svg"},
-            ],
+            messages=[{"role": "user", "content": prompt}],
         )
-        svg_text = ("<svg" + resp.content[0].text).strip()
+        svg_text = extract_svg(resp.content[0].text)
+        if not svg_text:
+            raise HTTPException(500, f"Claude returned no SVG: {resp.content[0].text[:120]}")
 
-        # Strip any stray markdown fences just in case
-        if "```" in svg_text:
-            svg_text = svg_text.split("```")[0].strip()
-        # Keep only up to the closing tag
-        if "</svg>" in svg_text:
-            svg_text = svg_text[: svg_text.index("</svg>") + len("</svg>")]
-
-        if not svg_text.startswith("<svg"):
-            raise HTTPException(500, f"Claude returned invalid SVG: {svg_text[:100]}")
-
-        try:
-            import cairosvg
-            png_bytes = cairosvg.svg2png(
-                bytestring=svg_text.encode(),
-                output_width=W,
-                output_height=H
-            )
-            b64 = base64.b64encode(png_bytes).decode()
-            return {"image": f"data:image/png;base64,{b64}", "type": "diagram", "svg": svg_text}
-        except ImportError:
-            svg_b64 = base64.b64encode(svg_text.encode()).decode()
-            return {"image": f"data:image/svg+xml;base64,{svg_b64}", "type": "diagram_svg", "svg": svg_text}
+        return {"image": svg_to_data_url(svg_text), "type": "diagram", "svg": svg_text}
 
     except HTTPException:
         raise
@@ -798,53 +784,93 @@ class AIPosterRequest(BaseModel):
 SVG_BRAND_BLOCK = """COMPANY: Confiscore — B2B SaaS that measures human confidence on a 0–1000 scale using
 patented Valence-Arousal psycho-technology. Used by HR teams, recruiters, and business leaders.
 
-BRAND DESIGN SYSTEM (follow precisely):
-- Background: deep navy gradient using <linearGradient> from #070B1B to #0D1433
-- Primary accent: electric green #38EF7D — use boldly on hero numbers/headlines
-- Secondary accents: electric blue #3B5BDB, blue-white #99ABFF
-- A thin 8px accent bar down the left edge of each panel
-- Typography: font-family="system-ui, -apple-system, Segoe UI, sans-serif" ONLY (no external fonts)
-- Subtle geometric accents only: thin lines, concentric circles, faint dot grid — never photos or people
-- Use the EXACT numbers from the content. Never invent data."""
+BRAND DESIGN SYSTEM (fixed Confiscore palette — always use exactly these colours):
+- Background: deep navy gradient <linearGradient> from #070B1B to #0D1433, filling the whole canvas.
+- Primary accent: electric green #38EF7D — use boldly on hero numbers/headlines and the left accent bar.
+- Secondary accents: electric blue #3B5BDB and blue-white #99ABFF for body/labels.
+- Muted "before" values: grey #5A6B82. Footer/secondary text: #8FA8C0.
+- A thin 8px green accent bar down the left edge of the canvas.
+- Typography: font-family="system-ui, -apple-system, Segoe UI, sans-serif" ONLY (no external fonts).
+- Subtle geometric accents only: thin lines, concentric circles, faint dot grid — never photos or people.
+- Use the EXACT numbers from the content. Never invent data.
+
+CHARTS — when the data suits it, draw a simple clean chart instead of plain text (always brand colours):
+- A before→after stat → a thin horizontal progress bar (grey track, green fill to the % value).
+- A 0–1000 score → a horizontal gauge bar with a marker at the score, or a donut arc.
+- A set of comparable values → short horizontal bars of proportional length with the number at the end.
+- Keep charts minimal and precise — align to a grid, label clearly, no clutter.
+- CHART LABELS MUST NOT OVERLAP THE BAR. A bar's track ends at a fixed x; any end-label (e.g. "Predictive",
+  "Reactive") goes to the RIGHT of where the bar track ENDS, with ≥ 12px gap — never on top of the fill.
+  If space is tight, place the label ABOVE or BELOW the bar instead. Reserve label width before sizing the bar.
+- A value label at the end of a bar must sit just past the fill's end, not over coloured fill.
+
+CRITICAL — PRECISION (the previous version had misaligned arrows and uneven boxes; fix this):
+- BEFORE → AFTER pairs: put "before", the arrow, and "after" on ONE shared baseline (identical y).
+  Draw the arrow as a real shape (a <line> + small <polygon> head) OR a "→" glyph vertically centred to the
+  number's optical middle — never floating above or below. Use consistent horizontal gaps around it.
+- CARD GRID: every card identical width AND height, snapped to a strict grid with EQUAL gutters.
+  Compute: card_w = (zone_width - gutter) / cols; card_h = (zone_height - gutter) / rows. Reuse these exact
+  values for every card. Align all card x/y to the grid — no card offset by a few px.
+- Center the content inside each card (use text-anchor="middle" on a shared center x).
+
+CRITICAL — SVG TEXT DOES NOT WRAP. You MUST prevent text overflow:
+- SVG <text> never auto-wraps. A long string WILL run off its area and overlap other elements.
+- Break every long line into multiple <text> elements stacked vertically (increment y by ~1.15x font-size).
+- Budget characters per line by font size. At the given width, a line must satisfy roughly:
+  max_chars ≈ (available_width_px) / (font_size_px * 0.6). Stay UNDER that. When unsure, use fewer.
+- Headlines: keep each line SHORT (≤ 18 characters for 60-90px text). Prefer 2-3 short lines over 1 long line.
+- A text element placed inside a card or column MUST fit within that box's width — measure before placing.
+- Estimate text width as chars * font_size * 0.6 and confirm it fits the element's width before committing.
+- Never let any text cross into a neighbouring card, column, or the canvas edge. Leave ≥ 40px margins."""
 
 
 def _build_single_prompt(req: AIPosterRequest, W: int, H: int, platform_str: str) -> str:
+    primary = (req.post_text or req.description or "").strip()
+    context = req.description.strip() if (req.post_text and req.description) else ""
     return f"""You are a world-class graphic designer who builds polished marketing posters in raw SVG.
 Design a premium social media poster for Confiscore as a complete, self-contained SVG.
 
 {SVG_BRAND_BLOCK}
 
-CONTENT TO VISUALIZE:
-{req.description}
+THE POST THIS POSTER ACCOMPANIES (design the visual to match ITS message, tone, and key numbers):
+{primary[:600]}
 
-{f"POST CONTEXT:{chr(10)}{req.post_text[:400]}" if req.post_text else ""}
+{f"BACKGROUND TOPIC (context only):{chr(10)}{context[:200]}" if context else ""}
 
 CANVAS: {W}x{H}px ({platform_str}). Set the root <svg> width="{W}" height="{H}" viewBox="0 0 {W} {H}".
 
-LAYOUT:
-- Strong hierarchy: ONE dominant focal element (a huge stat 110-150px, or a bold headline 60-72px)
-- If the content has multiple stats, lay them out as 2-4 clean rounded cards (rx=16) with rgba fills
-  and a thin glowing accent border; each big number in accent color with a small label under it
-- A soft radial glow blob behind the hero element (~18% opacity)
-- Generous padding (≈60px). Fill the canvas; no large empty zones, no clutter
-- Brand footer: "Confiscore" bottom-left in white bold 24px; "confiscore.com" bottom-right in accent color
+PICK A LAYOUT that best fits the post (vary it — do not always use the same one):
+  A) HERO STAT — one dominant number (110-160px) centered/left, 2-3 small supporting cards
+  B) SPLIT GRID — headline on the left half, a 2x2 stat-card grid on the right half
+  C) STACKED BANDS — 3-4 horizontal bands, each a stat with a label, accent rule between them
+  D) BIG STATEMENT — a bold 3-4 line headline as the focus, one stat strip along the bottom
+Choose the layout from the post's content: many numbers → B or C; one key number → A; a strong line → D.
 
-STYLE: Bloomberg data graphic meets premium SaaS marketing — analytical, trustworthy, high contrast.
+LAYOUT SAFETY (must hold for whichever layout you pick):
+- Define clear zones/cards with explicit x,y,width,height. NO element may cross into another zone or card.
+- Keep ≥ 40px outer margins and ≥ 30px gutters between cards.
+- Cards: rounded rect (rx=16), rgba fill, thin glowing accent border; big number in accent, SHORT label under it.
+- A soft radial glow blob (~18% opacity) behind the focal element, contained within its zone.
+- Brand footer: "Confiscore" bottom-left in white bold 24px; "confiscore.com" bottom-right in accent color.
+
+Before finishing, re-check every <text>: does it fit its zone/card width given chars * fontsize * 0.6? If not, shorten it or add a line break.
 
 OUTPUT: Raw SVG only. Start with <svg and end with </svg>. No markdown, no explanation."""
 
 
 def _build_carousel_prompt(req: AIPosterRequest) -> str:
+    primary = (req.post_text or req.description or "").strip()
+    context = req.description.strip() if (req.post_text and req.description) else ""
     return f"""You are a world-class graphic designer who builds LinkedIn carousels in raw SVG.
 Design a premium multi-slide carousel for Confiscore as ONE complete, self-contained SVG with
 all slides stacked vertically.
 
 {SVG_BRAND_BLOCK}
 
-CONTENT TO TURN INTO A CAROUSEL:
-{req.description}
+THE POST THIS CAROUSEL IS BASED ON (turn ITS message and numbers into slides):
+{primary[:700]}
 
-{f"POST CONTEXT:{chr(10)}{req.post_text[:400]}" if req.post_text else ""}
+{f"BACKGROUND TOPIC (context only):{chr(10)}{context[:200]}" if context else ""}
 
 CAROUSEL STRUCTURE:
 - Each slide is exactly 1080x1080px (Instagram/LinkedIn square)
@@ -874,13 +900,11 @@ async def ai_poster(req: AIPosterRequest):
 
     if is_carousel:
         prompt = _build_carousel_prompt(req)
-        render_kwargs = {}            # let cairosvg use the SVG's intrinsic (tall) size
         max_tokens = 16000
     else:
         W, H = (1200, 627) if req.platform == "li" else (1080, 1080)
         platform_str = "LinkedIn landscape" if req.platform == "li" else "Instagram square"
         prompt = _build_single_prompt(req, W, H, platform_str)
-        render_kwargs = {"output_width": W, "output_height": H}
         max_tokens = 8000
 
     try:
@@ -888,28 +912,16 @@ async def ai_poster(req: AIPosterRequest):
             model=CLAUDE_MODEL,
             max_tokens=max_tokens,
             temperature=0.8,
-            messages=[
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": "<svg"},
-            ],
+            messages=[{"role": "user", "content": prompt}],
         )
-        svg_text = ("<svg" + resp.content[0].text).strip()
+        svg_text = extract_svg(resp.content[0].text)
+        if not svg_text:
+            raise HTTPException(500, f"Claude returned no SVG: {resp.content[0].text[:120]}")
 
-        if "```" in svg_text:
-            svg_text = svg_text.split("```")[0].strip()
-        if "</svg>" in svg_text:
-            svg_text = svg_text[: svg_text.index("</svg>") + len("</svg>")]
-
-        if not svg_text.startswith("<svg"):
-            raise HTTPException(500, f"Claude returned invalid SVG: {svg_text[:100]}")
-
-        import cairosvg
-        png_bytes = cairosvg.svg2png(bytestring=svg_text.encode(), **render_kwargs)
-        b64 = base64.b64encode(png_bytes).decode()
         return {
-            "image": f"data:image/png;base64,{b64}",
+            "image": svg_to_data_url(svg_text),
             "model": "claude-svg",
-            "format": req.format,
+            "format": "carousel" if is_carousel else "single",
             "svg": svg_text,
         }
 

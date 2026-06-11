@@ -122,14 +122,14 @@ export default function Preview({
   }
 
   const generateAIPoster = async () => {
-    if (!description) { showToast('Generate a post first', 'error'); return }
+    const postText = content?.[previewPlatform] || ''
+    if (!postText) { showToast('Select a version first', 'error'); return }
     setAiLoading(true)
     try {
-      const postText = content?.[previewPlatform] || ''
       const { data } = await axios.post('/api/poster/ai', {
         description,
         platform: previewPlatform,
-        post_text: postText,
+        post_text: postText,   // the SELECTED voice drives the poster
         format: aiFormat
       })
       setAiUrl(data.image)
