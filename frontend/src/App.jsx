@@ -123,9 +123,14 @@ export default function App() {
       return
     }
 
-    const connKey = platform === 'li' ? 'linkedin' : 'instagram'
+    const PLATFORM_META = {
+      li: { connKey: 'linkedin',  label: 'LinkedIn' },
+      fb: { connKey: 'facebook',  label: 'Facebook' },
+      ig: { connKey: 'instagram', label: 'Instagram' },
+    }
+    const { connKey, label } = PLATFORM_META[platform] || PLATFORM_META.li
     if (!connections[connKey]) {
-      showToast(`Connect ${platform === 'li' ? 'LinkedIn' : 'Instagram'} first`, 'error')
+      showToast(`Connect ${label} first`, 'error')
       return
     }
 
@@ -156,7 +161,7 @@ export default function App() {
         platforms: [connKey]
       })
       if (data[connKey]?.success) {
-        showToast(`Posted to ${platform === 'li' ? 'LinkedIn' : 'Instagram'}!`, 'success')
+        showToast(`Posted to ${label}!`, 'success')
         loadDrafts()
       } else {
         showToast(data[connKey]?.error || 'Post failed', 'error')
@@ -343,6 +348,18 @@ export default function App() {
                       >
                         {posting ? <span className="spin" style={{ borderTopColor: 'white' }} /> : 'in'}
                         {connections.linkedin ? 'Post to LinkedIn' : 'Connect LinkedIn'}
+                      </button>
+                    )}
+                    {platforms.includes('fb') && (
+                      <button
+                        className="btn-post-li"
+                        style={{ background: '#1877F2' }}
+                        onClick={() => handlePost('fb')}
+                        disabled={posting || !connections.facebook}
+                        title={!connections.facebook ? 'Connect Facebook first' : ''}
+                      >
+                        {posting ? <span className="spin" style={{ borderTopColor: 'white' }} /> : 'f'}
+                        {connections.facebook ? 'Post to Facebook' : 'Connect Facebook'}
                       </button>
                     )}
                     {platforms.includes('ig') && (

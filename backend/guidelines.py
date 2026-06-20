@@ -151,6 +151,12 @@ WHAT HE NEVER DOES
 - Heavy emoji use throughout — at least 4-6 emojis in the body
 - 5-7 hashtags: #Confiscore #ConfidenceIsTheNewKPI #HRTech #Leadership #EmployeeEngagement
 - End with a friendly CTA and a 👇 or 🔗 emoji
+""",
+    "facebook_rules": """
+- Conversational and community-friendly — a touch warmer than LinkedIn
+- HARD LIMIT: 80 words. Hook → 2-3 emoji stat points → takeaway → question or CTA
+- 2-4 emojis. End with a question to spark comments, then a short link
+- 1-2 hashtags max (hashtags underperform on Facebook)
 """
 }
 
@@ -229,6 +235,12 @@ NEVER:
 - 3-4 short sentences max — hook must land in the first line
 - 5-7 hashtags: #Confiscore #ConfidenceIsTheNewKPI #HRTech #PeopleAnalytics + topic-specific
 - 1-2 emojis max, used for emphasis not decoration
+""",
+    "facebook_rules": """
+- Approachable but authoritative — slightly warmer than the LinkedIn voice
+- HARD LIMIT: 70 words. Lead with a number or contrast, short paragraphs with line breaks
+- 0-1 hashtag (hashtags underperform on Facebook). 0-1 emoji
+- End with a question or confiscore.com
 """
 }
 
@@ -313,6 +325,11 @@ replace the vague part with something concrete.
 - 3-4 short sentences building the argument
 - 6-8 hashtags: #DataDrivenHR #PeopleAnalytics #HRTech + brand tags
 - 1 emoji max — only if it adds visual clarity (📊 for data posts works well)
+""",
+    "facebook_rules": """
+- Data-led but accessible — explain what the number means for a broad audience
+- HARD LIMIT: 70 words. Open with the stat, then 3-4 short lines
+- 1 emoji max (📊). 0-1 hashtag. End with a question or confiscore.com
 """
 }
 
@@ -426,6 +443,11 @@ stop and rewrite that sentence to be more specific and more human.
   Examples: #Leadership #HiringTips #WorkCulture #Confiscore
   #ConfidenceIsTheNewKPI #PeopleFirst #HRLeadership
 - 1-2 emojis — used to punctuate emotion, not decorate
+""",
+    "facebook_rules": """
+- Story-led and human — Facebook rewards relatable, emotional posts
+- HARD LIMIT: 70 words. Human moment → insight → quiet close or question
+- 0-1 emoji. 0-1 hashtag. A question at the end drives comments
 """
 }
 

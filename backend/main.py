@@ -207,6 +207,8 @@ def engineer_prompt(description: str, platforms: list[str], search_results: str)
     platform_specs = []
     if "li" in platforms:
         platform_specs.append("LinkedIn: professional, 2-4 short paragraphs, no hashtag spam")
+    if "fb" in platforms:
+        platform_specs.append("Facebook: conversational, community-friendly, a question to drive comments")
     if "ig" in platforms:
         platform_specs.append("Instagram: engaging, 3-5 sentences, 5-8 hashtags at end")
 
@@ -237,11 +239,13 @@ Be specific and actionable. This brief goes directly to a post writer."""
 def write_version(brief: str, platforms: list[str], voice_key: str, raw_description: str = "") -> dict:
     guideline = get_guideline(voice_key)
     facts = get_facts()
-    platform_keys = [p for p in ["li", "ig"] if p in platforms]
+    platform_keys = [p for p in ["li", "fb", "ig"] if p in platforms]
 
     platform_rules = []
     if "li" in platforms:
         platform_rules.append(f"LINKEDIN RULES:\n{guideline['linkedin_rules']}")
+    if "fb" in platforms:
+        platform_rules.append(f"FACEBOOK RULES:\n{guideline['facebook_rules']}")
     if "ig" in platforms:
         platform_rules.append(f"INSTAGRAM RULES:\n{guideline['instagram_rules']}")
 
@@ -687,7 +691,7 @@ class DiagramRequest(BaseModel):
 
 @app.post("/api/poster/diagram")
 async def generate_diagram(req: DiagramRequest):
-    W, H = (1200, 627) if req.platform == "li" else (1080, 1080)
+    W, H, _ = PLATFORM_DIMS.get(req.platform, PLATFORM_DIMS["li"])
 
     prompt = f"""You are an expert SVG infographic designer. Create a stunning, professional SVG diagram for a social media post about Confiscore — a B2B SaaS that measures candidate confidence on a 0-1000 scale to help companies make better hiring decisions.
 
@@ -780,6 +784,13 @@ class AIPosterRequest(BaseModel):
     platform: str = "li"
     post_text: Optional[str] = None
     format: str = "single"   # "single" | "carousel"
+
+# Per-platform poster dimensions (W, H, label) — each platform's recommended feed image size.
+PLATFORM_DIMS = {
+    "li": (1200, 627, "LinkedIn landscape"),
+    "fb": (1200, 630, "Facebook landscape"),
+    "ig": (1080, 1080, "Instagram square"),
+}
 
 SVG_BRAND_BLOCK = """COMPANY: Confiscore — B2B SaaS that measures human confidence on a 0–1000 scale using
 patented Valence-Arousal psycho-technology. Used by HR teams, recruiters, and business leaders.
@@ -902,8 +913,7 @@ async def ai_poster(req: AIPosterRequest):
         prompt = _build_carousel_prompt(req)
         max_tokens = 16000
     else:
-        W, H = (1200, 627) if req.platform == "li" else (1080, 1080)
-        platform_str = "LinkedIn landscape" if req.platform == "li" else "Instagram square"
+        W, H, platform_str = PLATFORM_DIMS.get(req.platform, PLATFORM_DIMS["li"])
         prompt = _build_single_prompt(req, W, H, platform_str)
         max_tokens = 8000
 

@@ -37,6 +37,7 @@ export default function Composer({
         <div className="platform-list">
           {[
             { key: 'li', label: 'LinkedIn', icon: 'in' },
+            { key: 'fb', label: 'Facebook', icon: 'f' },
             { key: 'ig', label: 'Instagram', icon: 'IG' }
           ].map(({ key, label, icon }) => (
             <div

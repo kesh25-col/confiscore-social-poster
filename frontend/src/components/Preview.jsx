@@ -1,6 +1,27 @@
 import { useRef, useState, useEffect } from 'react'
 import axios from 'axios'
 
+// Rasterize an SVG data URL to a PNG Blob in the browser (no native libs needed).
+// LinkedIn/Meta only accept raster images, so generated SVG posters must be converted.
+async function rasterizeSvgToPng(svgDataUrl) {
+  const img = new Image()
+  await new Promise((resolve, reject) => {
+    img.onload = resolve
+    img.onerror = () => reject(new Error('Could not load SVG for rasterization'))
+    img.src = svgDataUrl
+  })
+  const w = img.naturalWidth || 1200
+  const h = img.naturalHeight || 627
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d')
+  ctx.drawImage(img, 0, 0, w, h)
+  return await new Promise((resolve, reject) =>
+    canvas.toBlob(b => (b ? resolve(b) : reject(new Error('Canvas toBlob failed'))), 'image/png')
+  )
+}
+
 function extractHashtags(text) {
   return (text.match(/#\w+/g) || []).join(' ')
 }
@@ -37,6 +58,43 @@ function LinkedInMock({ text, imageUrl, onImageClick }) {
         )}
         <div className="li-mock-actions">
           {['👍 Like', '💬 Comment', '↩ Repost', '➤ Send'].map(a => (
+            <button key={a} className="li-action-btn">{a}</button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function FacebookMock({ text, imageUrl, onImageClick }) {
+  return (
+    <div className="li-mock">
+      <div className="li-mock-card">
+        <div className="li-mock-header">
+          <div className="li-mock-avatar" style={{ background: '#1877F2' }}>CS</div>
+          <div>
+            <div className="li-mock-name">Confiscore</div>
+            <div className="li-mock-title">Sponsored · Confidence Management</div>
+            <div className="li-mock-time">Just now · 🌐</div>
+          </div>
+        </div>
+        <div className="li-mock-body">{text || ''}</div>
+        {imageUrl ? (
+          <div style={{ cursor: 'pointer' }} onClick={onImageClick}>
+            <img src={imageUrl} alt="Post visual" style={{ width: '100%', display: 'block' }} />
+          </div>
+        ) : (
+          <div className="li-mock-image-placeholder" onClick={onImageClick}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <path d="M21 15l-5-5L5 21"/>
+            </svg>
+            <span>Click to add image</span>
+          </div>
+        )}
+        <div className="li-mock-actions">
+          {['👍 Like', '💬 Comment', '↪ Share'].map(a => (
             <button key={a} className="li-action-btn">{a}</button>
           ))}
         </div>
@@ -92,6 +150,7 @@ export default function Preview({
   const [aiLoading, setAiLoading] = useState(false)
   const [aiModel, setAiModel] = useState(null)
   const [aiFormat, setAiFormat] = useState('single')   // 'single' | 'carousel'
+  const [aiImagePath, setAiImagePath] = useState(null) // server path to rasterized PNG
   const [diagramUrl, setDiagramUrl] = useState(null)
   const [diagramLoading, setDiagramLoading] = useState(false)
 
@@ -134,8 +193,23 @@ export default function Preview({
       })
       setAiUrl(data.image)
       setAiModel(data.model)
-      setImageUrl(data.image)
-      setImagePath(null)
+      setImageUrl(data.image)   // SVG renders crisply in the preview
+
+      // Rasterize the SVG to a PNG and upload it, so it can be posted (LinkedIn needs raster).
+      try {
+        const pngBlob = await rasterizeSvgToPng(data.image)
+        const fd = new FormData()
+        fd.append('file', pngBlob, 'poster.png')
+        const up = await axios.post('/api/upload-image', fd)
+        setAiImagePath(up.data.path)
+        setImagePath(up.data.path)
+      } catch (convErr) {
+        console.error('Poster rasterization failed:', convErr)
+        setAiImagePath(null)
+        setImagePath(null)
+        showToast('Poster ready, but image could not be prepared for posting', 'error')
+      }
+
       showToast(aiFormat === 'carousel' ? '✦ Carousel ready' : '✦ AI poster ready', 'success')
     } catch (e) {
       showToast(e.response?.data?.detail || 'AI generation failed', 'error')
@@ -181,7 +255,7 @@ export default function Preview({
                 className={`plat-tab ${p} ${previewPlatform === p ? 'active' : ''}`}
                 onClick={() => setPreviewPlatform(p)}
               >
-                {p === 'li' ? 'LinkedIn' : 'Instagram'}
+                {p === 'li' ? 'LinkedIn' : p === 'fb' ? 'Facebook' : 'Instagram'}
               </button>
             ))}
           </div>
@@ -191,6 +265,8 @@ export default function Preview({
 
         {previewPlatform === 'li'
           ? <LinkedInMock text={text} imageUrl={displayImage} onImageClick={handleImageClick} />
+          : previewPlatform === 'fb'
+          ? <FacebookMock text={text} imageUrl={displayImage} onImageClick={handleImageClick} />
           : <InstagramMock text={text} imageUrl={displayImage} onImageClick={handleImageClick} />
         }
       </div>
@@ -288,7 +364,7 @@ export default function Preview({
               ✦ Claude SVG · {aiFormat === 'carousel' ? 'carousel (scroll to view slides)' : 'click image to use as post visual'}
             </div>
             <img src={aiUrl} alt="AI generated visual" style={{ cursor: 'pointer', width: '100%' }}
-              onClick={() => { setImageUrl(aiUrl); setImagePath(null) }} />
+              onClick={() => { setImageUrl(aiUrl); setImagePath(aiImagePath) }} />
           </div>
         )}
       </div>

@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const PLATFORM_NAMES = { li: 'LinkedIn', ig: 'Instagram' }
+const PLATFORM_NAMES = { li: 'LinkedIn', fb: 'Facebook', ig: 'Instagram' }
 const VOICE_NAMES = {
   debasis: 'Himaan Chatterji Voice',
   brand: 'Brand Voice',
