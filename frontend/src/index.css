@@ -695,6 +695,32 @@ textarea::placeholder, input::placeholder { color: #A6ACBC; }
 .cal-side-time { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--navy); margin-bottom: 6px; }
 .cal-side-desc { font-size: 12px; color: var(--white-dim); line-height: 1.5; }
 
+/* ── Login gate ── */
+.login-screen {
+  height: 100vh; display: flex; align-items: center; justify-content: center;
+  background:
+    radial-gradient(1200px 600px at 100% -10%, rgba(139,92,246,0.10), transparent 60%),
+    radial-gradient(1000px 500px at -10% 0%, rgba(79,107,245,0.10), transparent 55%),
+    var(--bg);
+  padding: 20px;
+}
+.login-card {
+  width: 380px; max-width: 94vw;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 18px; padding: 34px 30px;
+  box-shadow: var(--shadow-md); text-align: center;
+}
+.login-logo {
+  width: 44px; height: 44px; border-radius: 12px;
+  background: var(--accent-grad); box-shadow: var(--glow);
+  display: flex; align-items: center; justify-content: center;
+  margin: 0 auto 16px;
+}
+.login-title { font-size: 18px; font-weight: 700; color: var(--navy); }
+.login-sub { font-size: 13px; color: var(--text-muted); margin: 6px 0 20px; }
+.login-card input { text-align: center; }
+.login-err { color: var(--danger); font-size: 12.5px; margin-top: 10px; }
+
 /* ── Settings ── */
 .settings-card {
   background: var(--bg2); border: 1px solid var(--border);

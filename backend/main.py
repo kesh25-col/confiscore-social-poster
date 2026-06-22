@@ -38,6 +38,20 @@ LI_CLIENT_SECRET = os.environ.get("LINKEDIN_CLIENT_SECRET", "")
 IG_APP_ID        = os.environ.get("INSTAGRAM_APP_ID", "")
 IG_APP_SECRET    = os.environ.get("INSTAGRAM_APP_SECRET", "")
 
+# ── Deployment config (all default to local dev — production sets these via env) ──
+# Render injects RENDER_EXTERNAL_URL automatically, so a deploy needs zero URL config.
+_render_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+# Where the backend itself is reachable (used for OAuth callback URLs).
+BACKEND_URL  = os.environ.get("BACKEND_URL",  _render_url or "http://localhost:8000").rstrip("/")
+# Where the user-facing app lives (used to redirect back after OAuth).
+# In production the frontend is the same origin as the backend; locally it's Vite on 5173.
+FRONTEND_URL = os.environ.get("FRONTEND_URL", _render_url or "http://localhost:5173").rstrip("/")
+# Optional shared password gate — when unset (local dev) the app is open as before.
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
+# Where persistent data (SQLite DB + uploads) lives. Defaults to the backend folder.
+DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path(__file__).parent)))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 if not ANTHROPIC_KEY:
     raise RuntimeError("ANTHROPIC_API_KEY missing from .env")
 
@@ -49,7 +63,7 @@ print(f"{'✓' if LI_CLIENT_ID else '!'} LinkedIn {'configured' if LI_CLIENT_ID 
 print(f"{'✓' if IG_APP_ID else '!'} Instagram {'configured' if IG_APP_ID else 'not configured'}")
 
 # ── SQLite ─────────────────────────────────────────────────────────────────────
-DB_PATH = Path(__file__).parent / "confiscore.db"
+DB_PATH = DATA_DIR / "confiscore.db"
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
@@ -112,16 +126,52 @@ def get_db():
 
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Confiscore Social Poster")
+_allowed_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+if FRONTEND_URL not in _allowed_origins:
+    _allowed_origins.append(FRONTEND_URL)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-UPLOAD_DIR = Path(__file__).parent / "uploads"
+UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+# ── Optional password gate ───────────────────────────────────────────────────────
+# When APP_PASSWORD is set (production), API calls require a matching token.
+# When unset (local dev), the app is fully open — localhost behaviour is unchanged.
+AUTH_TOKEN = hashlib.sha256(f"{APP_PASSWORD}:confiscore".encode()).hexdigest() if APP_PASSWORD else ""
+# These paths stay open even with the gate on: the login check itself, the
+# "is a gate enabled?" probe, and the OAuth browser redirects (which can't send headers).
+_AUTH_EXEMPT = ("/api/login", "/api/auth-required", "/api/auth/")
+
+@app.middleware("http")
+async def auth_gate(request: Request, call_next):
+    if APP_PASSWORD:
+        path = request.url.path
+        if path.startswith("/api/") and not path.startswith(_AUTH_EXEMPT):
+            if request.headers.get("X-Auth-Token") != AUTH_TOKEN:
+                return JSONResponse({"detail": "Authentication required"}, status_code=401)
+    return await call_next(request)
+
+class LoginRequest(BaseModel):
+    password: str
+
+@app.get("/api/auth-required")
+async def auth_required():
+    """Frontend asks this on load to decide whether to show the login screen."""
+    return {"required": bool(APP_PASSWORD)}
+
+@app.post("/api/login")
+async def login(req: LoginRequest):
+    if not APP_PASSWORD:
+        return {"token": ""}          # no gate configured — let everyone in
+    if req.password == APP_PASSWORD:
+        return {"token": AUTH_TOKEN}
+    raise HTTPException(401, "Incorrect password")
 
 # ── Models ─────────────────────────────────────────────────────────────────────
 class GenerateRequest(BaseModel):
@@ -559,7 +609,7 @@ async def linkedin_auth():
     params = {
         "response_type": "code",
         "client_id": client_id,
-        "redirect_uri": "http://localhost:8000/api/auth/linkedin/callback",
+        "redirect_uri": f"{BACKEND_URL}/api/auth/linkedin/callback",
         "state": state,
         # OpenID Connect scopes (modern). r_liteprofile/r_emailaddress are deprecated.
         # Requires "Sign In with LinkedIn using OpenID Connect" + "Share on LinkedIn" products.
@@ -587,7 +637,7 @@ async def linkedin_callback(code: str, state: str):
             data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": "http://localhost:8000/api/auth/linkedin/callback",
+                "redirect_uri": f"{BACKEND_URL}/api/auth/linkedin/callback",
                 "client_id": client_id,
                 "client_secret": client_secret,
             }
@@ -615,7 +665,7 @@ async def linkedin_callback(code: str, state: str):
         )
         conn.commit()
 
-    return RedirectResponse("http://localhost:5173?connected=linkedin")
+    return RedirectResponse(f"{FRONTEND_URL}/?connected=linkedin")
 
 # ── Instagram OAuth ────────────────────────────────────────────────────────────
 @app.get("/api/auth/instagram")
@@ -629,7 +679,7 @@ async def instagram_auth():
         conn.commit()
     params = {
         "client_id": app_id,
-        "redirect_uri": "http://localhost:8000/api/auth/instagram/callback",
+        "redirect_uri": f"{BACKEND_URL}/api/auth/instagram/callback",
         "scope": "instagram_basic,instagram_content_publish",
         "response_type": "code",
         "state": state
@@ -657,7 +707,7 @@ async def instagram_callback(code: str, state: str):
                 "client_id": app_id,
                 "client_secret": app_secret,
                 "grant_type": "authorization_code",
-                "redirect_uri": "http://localhost:8000/api/auth/instagram/callback",
+                "redirect_uri": f"{BACKEND_URL}/api/auth/instagram/callback",
                 "code": code,
             }
         )
@@ -676,7 +726,7 @@ async def instagram_callback(code: str, state: str):
         )
         conn.commit()
 
-    return RedirectResponse("http://localhost:5173?connected=instagram")
+    return RedirectResponse(f"{FRONTEND_URL}/?connected=instagram")
 
 # ── Disconnect ─────────────────────────────────────────────────────────────────
 @app.delete("/api/connections/{platform}")
@@ -1100,3 +1150,16 @@ async def status():
         "instagram_oauth": "configured" if IG_APP_ID else "not configured",
         "connections": connections
     }
+
+# ── Serve the built frontend (production only) ────────────────────────────────────
+# In local dev the React app runs on Vite (5173) and `dist/` does not exist, so this
+# mount is skipped and nothing about the local workflow changes. In production the
+# Docker build produces frontend/dist and FastAPI serves it from the same origin —
+# one service, one URL, no CORS or proxy needed.
+# NOTE: mounted at "/" LAST so all /api and /uploads routes above take precedence.
+FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
+if FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
+    print(f"✓ Serving frontend from {FRONTEND_DIST}")
+else:
+    print("! frontend/dist not found — API-only mode (this is normal for local dev)")

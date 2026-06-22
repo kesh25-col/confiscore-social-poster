@@ -1,0 +1,25 @@
+# Render Blueprint — one free web service that builds the frontend and serves the
+# whole app (frontend + API) from a single URL. Secrets are entered in the Render
+# dashboard, never committed. See DEPLOY.md for step-by-step instructions.
+services:
+  - type: web
+    name: confiscore-social-poster
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      # Required — paste these in the Render dashboard (Environment tab):
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SERPER_API_KEY
+        sync: false
+      # Team access password — anyone with it can use the app and post to LinkedIn.
+      - key: APP_PASSWORD
+        sync: false
+      # LinkedIn OAuth app credentials:
+      - key: LINKEDIN_CLIENT_ID
+        sync: false
+      - key: LINKEDIN_CLIENT_SECRET
+        sync: false
+      # BACKEND_URL / FRONTEND_URL are auto-detected from RENDER_EXTERNAL_URL,
+      # so you normally do NOT need to set them. Override only for a custom domain.
