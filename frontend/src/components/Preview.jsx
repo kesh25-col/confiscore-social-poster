@@ -151,8 +151,6 @@ export default function Preview({
   const [aiModel, setAiModel] = useState(null)
   const [aiFormat, setAiFormat] = useState('single')   // 'single' | 'carousel'
   const [aiImagePath, setAiImagePath] = useState(null) // server path to rasterized PNG
-  const [diagramUrl, setDiagramUrl] = useState(null)
-  const [diagramLoading, setDiagramLoading] = useState(false)
 
   // Carousel is LinkedIn-only — fall back to single poster on Instagram
   useEffect(() => {
@@ -218,36 +216,14 @@ export default function Preview({
     }
   }
 
-  const generateDiagram = async () => {
-    if (!description) { showToast('Generate a post first', 'error'); return }
-    setDiagramLoading(true)
-    try {
-      const postText = content?.[previewPlatform] || ''
-      const { data } = await axios.post('/api/poster/diagram', {
-        description,
-        post_text: postText,
-        platform: previewPlatform
-      })
-      setDiagramUrl(data.image)
-      setShowDiagram(true)
-      setImageUrl(data.image)
-      setImagePath(null)
-      showToast('✦ Diagram generated', 'success')
-    } catch (e) {
-      showToast(e.response?.data?.detail || 'Diagram generation failed', 'error')
-    } finally {
-      setDiagramLoading(false)
-    }
-  }
-
-  const text = content?.[previewPlatform] || content?.[platforms[0]] || ''
+const text = content?.[previewPlatform] || content?.[platforms[0]] || ''
   const displayImage = imageUrl
 
   return (
     <>
       <div className="preview-section">
         <div className="preview-header">
-          <span className="preview-title">// Platform Preview</span>
+          <span className="preview-title">Platform Preview</span>
           <div className="platform-tabs">
             {platforms.map(p => (
               <button
@@ -274,14 +250,14 @@ export default function Preview({
       {/* AI Poster generator */}
       <div className="poster-section" style={{ marginTop: '1rem' }}>
         <div className="poster-header">
-          <span className="poster-title">// AI Image Generation</span>
-          <span style={{ fontSize: 10, color: 'var(--white-muted)', fontFamily: 'var(--font-mono)' }}>
+          <span className="poster-title">AI Image Generation</span>
+          <span style={{ fontSize: 11, color: 'var(--white-muted)', fontFamily: 'var(--font-body)' }}>
             Claude · SVG
           </span>
         </div>
 
         {/* Format selector: single poster vs carousel (carousel = LinkedIn only) */}
-        <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+        <div style={{ display: 'flex', gap: 8, padding: '12px 16px 0' }}>
           {[
             { key: 'single', label: '▢ Single poster' },
             ...(previewPlatform === 'li' ? [{ key: 'carousel', label: '▦ Carousel' }] : []),
@@ -292,14 +268,15 @@ export default function Preview({
               disabled={aiLoading}
               style={{
                 flex: 1,
-                fontSize: 12,
-                padding: '6px 10px',
-                borderRadius: 6,
+                fontSize: 12.5,
+                fontWeight: 600,
+                padding: '8px 10px',
+                borderRadius: 999,
                 cursor: aiLoading ? 'default' : 'pointer',
                 border: '1px solid',
-                borderColor: aiFormat === opt.key ? '#38EF7D' : 'rgba(255,255,255,0.15)',
-                background: aiFormat === opt.key ? 'rgba(56,239,125,0.12)' : 'transparent',
-                color: aiFormat === opt.key ? '#38EF7D' : 'var(--white-muted)',
+                borderColor: aiFormat === opt.key ? 'var(--accent)' : 'var(--border2)',
+                background: aiFormat === opt.key ? 'var(--accent-soft)' : 'var(--bg2)',
+                color: aiFormat === opt.key ? 'var(--accent)' : 'var(--white-muted)',
                 fontFamily: 'var(--font-body)',
                 transition: 'all 0.15s',
               }}
@@ -309,30 +286,21 @@ export default function Preview({
           ))}
         </div>
 
-        <div className="poster-btn-row">
+        <div className="poster-btn-row" style={{ paddingTop: 12 }}>
           <button
             className={`btn-poster ${aiUrl && !aiLoading ? 'active' : ''}`}
             onClick={generateAIPoster}
-            disabled={aiLoading || diagramLoading}
-            style={{ borderColor: '#38EF7D', color: aiUrl ? '#38EF7D' : undefined }}
+            disabled={aiLoading}
           >
             {aiLoading
               ? '⟳ generating...'
               : aiFormat === 'carousel' ? '✦ Generate carousel' : '✦ Generate poster'}
           </button>
-          <button
-            className="btn-poster"
-            onClick={generateDiagram}
-            disabled={diagramLoading || aiLoading}
-            style={{ borderColor: '#B464FF', color: diagramUrl ? '#B464FF' : undefined }}
-          >
-            {diagramLoading ? '⟳ generating...' : '◈ diagram'}
-          </button>
-          {(aiUrl || diagramUrl) && (
+          {aiUrl && (
             <button
               className="btn-poster"
               onClick={() => {
-                setAiUrl(null); setDiagramUrl(null)
+                setAiUrl(null)
                 setImageUrl(null); setImagePath(null)
               }}
             >
@@ -342,14 +310,14 @@ export default function Preview({
         </div>
         {aiLoading && (
           <div className="poster-placeholder">
-            <span style={{ color: '#38EF7D', fontSize: 13 }}>
+            <span style={{ color: 'var(--accent)', fontSize: 13, fontWeight: 550 }}>
               ⟳ {aiFormat === 'carousel'
                 ? 'Building carousel slides — this takes 20–40 seconds...'
                 : 'Designing poster — this takes 10–20 seconds...'}
             </span>
           </div>
         )}
-        {!aiUrl && !aiLoading && !diagramUrl && (
+        {!aiUrl && !aiLoading && (
           <div className="poster-placeholder">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ opacity: 0.3 }}>
               <rect x="3" y="3" width="18" height="18" rx="2"/>
@@ -360,7 +328,7 @@ export default function Preview({
         )}
         {aiUrl && !aiLoading && (
           <div className="poster-img-wrap">
-            <div style={{ fontSize: 10, color: 'var(--white-muted)', marginBottom: 6, fontFamily: 'var(--font-mono)' }}>
+            <div style={{ fontSize: 11, color: 'var(--white-muted)', marginBottom: 8, fontFamily: 'var(--font-body)' }}>
               ✦ Claude SVG · {aiFormat === 'carousel' ? 'carousel (scroll to view slides)' : 'click image to use as post visual'}
             </div>
             <img src={aiUrl} alt="AI generated visual" style={{ cursor: 'pointer', width: '100%' }}

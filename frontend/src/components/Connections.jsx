@@ -59,16 +59,17 @@ function CredentialsModal({ platform, onClose, onSaved }) {
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 1000,
-      background: 'rgba(0,0,0,0.72)',
+      background: 'rgba(20,22,31,0.45)', backdropFilter: 'blur(4px)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
     }} onClick={onClose}>
       <div style={{
-        background: '#141414',
-        border: '1px solid rgba(255,255,255,0.12)',
-        borderRadius: 12,
+        background: 'var(--bg2)',
+        border: '1px solid var(--border)',
+        borderRadius: 18,
         padding: '28px 28px 24px',
-        width: 420, maxWidth: '94vw',
+        width: 440, maxWidth: '94vw',
         fontFamily: 'var(--font-body)',
+        boxShadow: '0 24px 60px rgba(16,24,40,0.24)',
       }} onClick={e => e.stopPropagation()}>
 
         {/* Header */}
@@ -82,24 +83,24 @@ function CredentialsModal({ platform, onClose, onSaved }) {
             {platform.shortLabel}
           </div>
           <div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: '#fff' }}>
+            <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--navy)' }}>
               Setup {platform.label}
             </div>
-            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)', marginTop: 1 }}>
+            <div style={{ fontSize: 12.5, color: 'var(--white-muted)', marginTop: 1 }}>
               Enter your OAuth app credentials
             </div>
           </div>
           <button onClick={onClose} style={{
             marginLeft: 'auto', background: 'none', border: 'none',
-            color: 'rgba(255,255,255,0.4)', fontSize: 18, cursor: 'pointer', lineHeight: 1,
+            color: 'var(--white-muted)', fontSize: 18, cursor: 'pointer', lineHeight: 1,
           }}>✕</button>
         </div>
 
         {/* Hint */}
         <div style={{
-          background: 'rgba(255,255,255,0.05)', borderRadius: 8,
-          padding: '10px 12px', marginBottom: 18, fontSize: 12,
-          color: 'rgba(255,255,255,0.5)', lineHeight: 1.5,
+          background: 'var(--bg3)', borderRadius: 10,
+          padding: '11px 13px', marginBottom: 18, fontSize: 12.5,
+          color: 'var(--white-dim)', lineHeight: 1.5,
         }}>
           {platform.hint}{' '}
           <a href={platform.helpUrl} target="_blank" rel="noreferrer"
@@ -110,7 +111,7 @@ function CredentialsModal({ platform, onClose, onSaved }) {
 
         <form onSubmit={handleSubmit}>
           <div style={{ marginBottom: 14 }}>
-            <label style={{ display: 'block', fontSize: 11, color: 'rgba(255,255,255,0.5)', marginBottom: 5, letterSpacing: '0.06em' }}>
+            <label style={{ display: 'block', fontSize: 11, color: 'var(--white-muted)', marginBottom: 6, letterSpacing: '0.04em' }}>
               {platform.idLabel.toUpperCase()}
             </label>
             <input
@@ -120,17 +121,17 @@ function CredentialsModal({ platform, onClose, onSaved }) {
               placeholder={`Paste your ${platform.idLabel}`}
               style={{
                 width: '100%', boxSizing: 'border-box',
-                background: 'rgba(255,255,255,0.06)',
-                border: '1px solid rgba(255,255,255,0.12)',
-                borderRadius: 7, padding: '9px 11px',
-                color: '#fff', fontSize: 13,
-                fontFamily: 'var(--font-mono)',
+                background: 'var(--bg2)',
+                border: '1px solid var(--border2)',
+                borderRadius: 10, padding: '11px 13px',
+                color: 'var(--navy)', fontSize: 13.5,
+                fontFamily: 'var(--font-body)',
                 outline: 'none',
               }}
             />
           </div>
           <div style={{ marginBottom: 20 }}>
-            <label style={{ display: 'block', fontSize: 11, color: 'rgba(255,255,255,0.5)', marginBottom: 5, letterSpacing: '0.06em' }}>
+            <label style={{ display: 'block', fontSize: 11, color: 'var(--white-muted)', marginBottom: 6, letterSpacing: '0.04em' }}>
               {platform.secretLabel.toUpperCase()}
             </label>
             <input
@@ -140,11 +141,11 @@ function CredentialsModal({ platform, onClose, onSaved }) {
               placeholder={`Paste your ${platform.secretLabel}`}
               style={{
                 width: '100%', boxSizing: 'border-box',
-                background: 'rgba(255,255,255,0.06)',
-                border: '1px solid rgba(255,255,255,0.12)',
-                borderRadius: 7, padding: '9px 11px',
-                color: '#fff', fontSize: 13,
-                fontFamily: 'var(--font-mono)',
+                background: 'var(--bg2)',
+                border: '1px solid var(--border2)',
+                borderRadius: 10, padding: '11px 13px',
+                color: 'var(--navy)', fontSize: 13.5,
+                fontFamily: 'var(--font-body)',
                 outline: 'none',
               }}
             />
@@ -156,18 +157,18 @@ function CredentialsModal({ platform, onClose, onSaved }) {
 
           <div style={{ display: 'flex', gap: 10 }}>
             <button type="button" onClick={onClose} style={{
-              flex: 1, padding: '9px 0',
-              background: 'rgba(255,255,255,0.07)',
-              border: '1px solid rgba(255,255,255,0.12)',
-              borderRadius: 7, color: 'rgba(255,255,255,0.6)',
-              cursor: 'pointer', fontSize: 13, fontFamily: 'var(--font-body)',
+              flex: 1, padding: '11px 0',
+              background: 'var(--bg3)',
+              border: '1px solid var(--border2)',
+              borderRadius: 10, color: 'var(--white-dim)',
+              cursor: 'pointer', fontSize: 13.5, fontWeight: 550, fontFamily: 'var(--font-body)',
             }}>Cancel</button>
             <button type="submit" disabled={saving} style={{
-              flex: 2, padding: '9px 0',
+              flex: 2, padding: '11px 0',
               background: platform.color,
-              border: 'none', borderRadius: 7,
+              border: 'none', borderRadius: 10,
               color: '#fff', cursor: 'pointer',
-              fontSize: 13, fontWeight: 600,
+              fontSize: 13.5, fontWeight: 600,
               fontFamily: 'var(--font-body)',
               opacity: saving ? 0.7 : 1,
             }}>
@@ -243,12 +244,12 @@ export default function Connections({ connections, onConnect, compact = false })
                 key={p.key}
                 onClick={() => connected ? handleDisconnect(p.key) : handleConnect(p)}
                 style={{
-                  fontSize: 12, fontWeight: 600,
-                  padding: '4px 10px', borderRadius: 6, border: '1px solid',
-                  borderColor: connected ? p.color : 'rgba(255,255,255,0.2)',
-                  background: connected ? p.bgColor : 'transparent',
-                  color: connected ? p.color : 'rgba(255,255,255,0.7)',
-                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
+                  fontSize: 12.5, fontWeight: 600,
+                  padding: '6px 12px', borderRadius: 999, border: '1px solid',
+                  borderColor: connected ? p.color : 'var(--border2)',
+                  background: connected ? p.bgColor : 'var(--bg2)',
+                  color: connected ? p.color : 'var(--white-dim)',
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5,
                   fontFamily: 'var(--font-body)', transition: 'all 0.15s',
                 }}
                 title={connected ? `${p.label}: ${connected.username} — click to disconnect` : `Connect ${p.label}`}
@@ -327,7 +328,7 @@ export default function Connections({ connections, onConnect, compact = false })
                     <button
                       className="btn btn-sm"
                       onClick={() => handleClearCreds(p.key)}
-                      style={{ fontSize: 11, opacity: 0.5, borderColor: 'rgba(255,255,255,0.2)', color: 'rgba(255,255,255,0.5)' }}
+                      style={{ fontSize: 11, borderColor: 'var(--border2)', color: 'var(--white-muted)' }}
                       title="Clear saved credentials"
                     >
                       ✕ reset

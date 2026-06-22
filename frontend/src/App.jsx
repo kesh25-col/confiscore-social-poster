@@ -6,12 +6,16 @@ import Preview from './components/Preview'
 import ImageUpload from './components/ImageUpload'
 import Connections from './components/Connections'
 import Drafts from './components/Drafts'
+import Calendar from './components/Calendar'
+import Settings from './components/Settings'
 import Toast from './components/Toast'
 
 const API = '/api'
 
 export default function App() {
-  const [view, setView] = useState('compose') // compose | drafts
+  const [view, setView] = useState('compose') // compose | calendar | drafts | settings
+  const [scheduleAt, setScheduleAt] = useState('')
+  const [scheduling, setScheduling] = useState(false)
   const [platforms, setPlatforms] = useState(['li'])
   const [description, setDescription] = useState('')
   const [generating, setGenerating] = useState(false)
@@ -117,6 +121,41 @@ export default function App() {
     }
   }
 
+  const handleSchedule = async () => {
+    if (!versions) { showToast('Generate a post first', 'error'); return }
+    if (!selectedVersion) { showToast('Select a version first', 'error'); return }
+    if (!scheduleAt) { showToast('Pick a date & time', 'error'); return }
+    const when = new Date(scheduleAt)
+    if (isNaN(when) || when < new Date()) { showToast('Pick a future date & time', 'error'); return }
+
+    setScheduling(true)
+    try {
+      if (savedDraftId) {
+        await axios.patch(`${API}/drafts/${savedDraftId}`, {
+          selected_version: selectedVersion,
+          image_path: imagePath,
+          scheduled_for: when.toISOString(),
+        })
+      } else {
+        const { data } = await axios.post(`${API}/drafts`, {
+          description, platforms, versions,
+          selected_version: selectedVersion,
+          image_path: imagePath,
+          scheduled_for: when.toISOString(),
+        })
+        setSavedDraftId(data.id)
+      }
+      showToast(`Scheduled for ${when.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`, 'success')
+      setScheduleAt('')
+      loadDrafts()
+      setView('calendar')
+    } catch (e) {
+      showToast('Failed to schedule', 'error')
+    } finally {
+      setScheduling(false)
+    }
+  }
+
   const handlePost = async (platform) => {
     if (!versions || !selectedVersion) {
       showToast('Select a version first', 'error')
@@ -173,6 +212,24 @@ export default function App() {
     }
   }
 
+  const handleOpenDraft = (draft) => {
+    setDescription(draft.description)
+    setPlatforms(draft.platforms || ['li'])
+    setVersions(draft.versions)
+    setSelectedVersion(draft.selected_version || Object.keys(draft.versions || {})[0])
+    setPreviewPlatform((draft.platforms || ['li'])[0])
+    setSavedDraftId(draft.id)
+    if (draft.image_path) {
+      setImageUrl(`/uploads/${draft.image_path}`)
+      setImagePath(draft.image_path)
+    } else {
+      setImageUrl(null)
+      setImagePath(null)
+    }
+    setView('compose')
+    showToast('Draft loaded', 'success')
+  }
+
   const selectedContent = versions && selectedVersion
     ? versions[selectedVersion]?.content
     : null
@@ -207,15 +264,27 @@ export default function App() {
               Compose
             </button>
             <button
+              className={`nav-btn ${view === 'calendar' ? 'active' : ''}`}
+              onClick={() => { setView('calendar'); loadDrafts() }}
+            >
+              Calendar
+            </button>
+            <button
               className={`nav-btn ${view === 'drafts' ? 'active' : ''}`}
               onClick={() => { setView('drafts'); loadDrafts() }}
             >
               Drafts & Posts
               {drafts.length > 0 && (
-                <span style={{ marginLeft: 5, background: 'rgba(255,255,255,0.15)', borderRadius: 10, padding: '0 6px', fontSize: 10 }}>
+                <span style={{ marginLeft: 6, background: 'var(--accent-soft)', color: 'var(--accent)', borderRadius: 999, padding: '1px 8px', fontSize: 11, fontWeight: 700 }}>
                   {drafts.length}
                 </span>
               )}
+            </button>
+            <button
+              className={`nav-btn ${view === 'settings' ? 'active' : ''}`}
+              onClick={() => setView('settings')}
+            >
+              Settings
             </button>
           </nav>
           <Connections
@@ -240,6 +309,7 @@ export default function App() {
                 onGenerate={handleGenerate}
                 generating={generating}
                 generationStep={generationStep}
+                showToast={showToast}
               />
               <div style={{ padding: '0 1.25rem' }}>
                 <div className="divider" />
@@ -265,6 +335,27 @@ export default function App() {
                       {saving ? <span className="spin" /> : '↓'} Save draft
                     </button>
                   </div>
+
+                  <div className="divider" />
+                  <div className="section-label">Schedule</div>
+                  <input
+                    type="datetime-local"
+                    value={scheduleAt}
+                    onChange={e => setScheduleAt(e.target.value)}
+                    min={new Date().toISOString().slice(0, 16)}
+                    style={{ marginBottom: 8 }}
+                  />
+                  <button
+                    className="btn btn-secondary"
+                    style={{ width: '100%' }}
+                    onClick={handleSchedule}
+                    disabled={scheduling || !scheduleAt}
+                  >
+                    {scheduling ? <span className="spin" /> : '🗓️'} Schedule post
+                  </button>
+                  <p style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 6 }}>
+                    Appears on the Calendar. You publish it with one click when it's due.
+                  </p>
                 </div>
               )}
             </aside>
@@ -378,6 +469,24 @@ export default function App() {
               )}
             </div>
           </>
+        ) : view === 'calendar' ? (
+          <div style={{ flex: 1, overflow: 'auto', padding: '1.5rem' }}>
+            <Calendar
+              drafts={drafts}
+              connections={connections}
+              onRefresh={loadDrafts}
+              showToast={showToast}
+              onOpen={handleOpenDraft}
+            />
+          </div>
+        ) : view === 'settings' ? (
+          <div style={{ flex: 1, overflow: 'auto', padding: '1.5rem' }}>
+            <Settings
+              connections={connections}
+              onConnect={loadConnections}
+              showToast={showToast}
+            />
+          </div>
         ) : (
           <div style={{ flex: 1, overflow: 'auto', padding: '1.5rem' }}>
             <Drafts
@@ -385,6 +494,7 @@ export default function App() {
               connections={connections}
               onRefresh={loadDrafts}
               showToast={showToast}
+              onOpen={handleOpenDraft}
             />
           </div>
         )}

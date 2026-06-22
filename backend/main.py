@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import requests as req_lib
 import httpx
@@ -62,7 +63,8 @@ def init_db():
             image_path    TEXT,
             status        TEXT DEFAULT 'draft',
             created_at    TEXT NOT NULL,
-            posted_at     TEXT
+            posted_at     TEXT,
+            scheduled_for TEXT
         );
         CREATE TABLE IF NOT EXISTS connections (
             platform      TEXT PRIMARY KEY,
@@ -81,6 +83,10 @@ def init_db():
             value TEXT
         );
         """)
+        # Migration: add scheduled_for to existing DBs that predate it.
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(posts)").fetchall()]
+        if "scheduled_for" not in cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN scheduled_for TEXT")
         conn.commit()
 
 def get_setting(key: str) -> str:
@@ -115,6 +121,7 @@ app.add_middleware(
 
 UPLOAD_DIR = Path(__file__).parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 # ── Models ─────────────────────────────────────────────────────────────────────
 class GenerateRequest(BaseModel):
@@ -127,11 +134,13 @@ class SaveDraftRequest(BaseModel):
     versions: dict
     selected_version: Optional[str] = None
     image_path: Optional[str] = None
+    scheduled_for: Optional[str] = None
 
 class UpdateDraftRequest(BaseModel):
     selected_version: Optional[str] = None
     image_path: Optional[str] = None
     status: Optional[str] = None
+    scheduled_for: Optional[str] = None
 
 class PostNowRequest(BaseModel):
     post_id: int
@@ -156,6 +165,48 @@ def web_search(query: str) -> str:
     except Exception as e:
         print(f"Web search failed: {e}")
         return ""
+
+# ── Confiscore website context (cached) ──────────────────────────────────────────
+_site_cache = {"text": "", "ts": 0.0}
+
+def get_confiscore_context() -> str:
+    """Fetch & cache visible text from confiscore.com to ground content in the real site."""
+    if _site_cache["text"] and (time.time() - _site_cache["ts"]) < 3600:
+        return _site_cache["text"]
+    try:
+        resp = req_lib.get("https://confiscore.com", timeout=8,
+                           headers={"User-Agent": "Mozilla/5.0 (ConfiscorePoster)"})
+        text = re.sub(r"<script.*?</script>", " ", resp.text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<style.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()[:2500]
+        if text:
+            _site_cache["text"] = text
+            _site_cache["ts"] = time.time()
+        return text or get_facts()
+    except Exception as e:
+        print(f"Confiscore site fetch failed: {e}")
+        return get_facts()
+
+def get_competitors() -> list[str]:
+    """Competitor names/sites the user configured, newline- or comma-separated."""
+    raw = get_setting("COMPETITORS")
+    if not raw:
+        return []
+    parts = re.split(r"[\n,]+", raw)
+    return [p.strip() for p in parts if p.strip()]
+
+def competitor_research(topic: str) -> str:
+    """Search each configured competitor against the topic and collect angles to differentiate from."""
+    comps = get_competitors()
+    if not comps:
+        return ""
+    blocks = []
+    for c in comps[:4]:
+        snippets = web_search(f"{c} {topic}".strip())
+        if snippets:
+            blocks.append(f"COMPETITOR — {c}:\n{snippets}")
+    return "\n\n".join(blocks)
 
 # ── Claude text helper ─────────────────────────────────────────────────────────
 def claude_complete(prompt: str, json_mode: bool = False, temperature: float = 1.0,
@@ -328,6 +379,81 @@ async def generate(req: GenerateRequest):
         "search_used": bool(search_results)
     }
 
+# ── Research / auto-description ──────────────────────────────────────────────────
+class ResearchRequest(BaseModel):
+    mode: str                       # "seed" | "auto"
+    seed: Optional[str] = None      # required for "seed" mode
+    platforms: list[str] = ["li"]
+
+@app.post("/api/research")
+async def research(req: ResearchRequest):
+    site_context = get_confiscore_context()
+    facts = get_facts()
+
+    if req.mode == "seed":
+        seed = (req.seed or "").strip()
+        if not seed:
+            raise HTTPException(400, "Provide a topic to research")
+
+        web = web_search(f"{seed} confidence hiring HR recruitment trends 2026")
+        comp = competitor_research(seed)
+
+        prompt = f"""You are a B2B content strategist for Confiscore.
+
+{facts}
+
+CONFISCORE WEBSITE CONTENT (ground truth — use real positioning from here):
+{site_context[:1500]}
+
+SEED TOPIC FROM USER: "{seed}"
+
+LIVE WEB RESEARCH:
+{web or "(no web results)"}
+
+{f'COMPETITOR ACTIVITY (find a differentiated angle vs these):{chr(10)}{comp}' if comp else ''}
+
+TASK: Write a single, concrete post description (3-5 sentences) that a post writer can turn into
+social content. Anchor it in Confiscore's real positioning, weave in a specific data point or angle
+from the research, and stake out a position that stands apart from the competitors above.
+Output ONLY the description text — no headings, no preamble."""
+
+        description = claude_complete(prompt, temperature=0.9, max_tokens=600).strip()
+        return {
+            "description": description,
+            "web_used": bool(web),
+            "competitors_used": bool(comp),
+        }
+
+    # mode == "auto" — suggest several ready-to-use post ideas
+    web = web_search("HR confidence hiring recruitment trends statistics 2026")
+    comp = competitor_research("confidence measurement hiring assessment")
+
+    prompt = f"""You are a B2B content strategist for Confiscore.
+
+{facts}
+
+CONFISCORE WEBSITE CONTENT:
+{site_context[:1500]}
+
+LIVE WEB RESEARCH (trends & data):
+{web or "(no web results)"}
+
+{f'COMPETITOR ACTIVITY (differentiate from these):{chr(10)}{comp}' if comp else ''}
+
+TASK: Propose 5 distinct, timely social post ideas for Confiscore. Each must be grounded in the
+research/site above and offer a fresh angle competitors are NOT covering.
+
+Respond as a JSON object:
+{{"ideas": [{{"title": "short punchy title", "description": "3-4 sentence post brief with a specific angle and data point"}}]}}"""
+
+    raw = claude_complete(prompt, json_mode=True, temperature=0.95, max_tokens=1800)
+    data = parse_json_safe(raw)
+    return {
+        "ideas": data.get("ideas", []),
+        "web_used": bool(web),
+        "competitors_used": bool(comp),
+    }
+
 # ── Image upload ───────────────────────────────────────────────────────────────
 @app.post("/api/upload-image")
 async def upload_image(file: UploadFile = File(...)):
@@ -355,16 +481,17 @@ async def upload_image(file: UploadFile = File(...)):
 @app.post("/api/drafts")
 async def save_draft(req: SaveDraftRequest):
     now = datetime.utcnow().isoformat()
+    status = "scheduled" if req.scheduled_for else "draft"
     with get_db() as conn:
         cur = conn.execute(
             """INSERT INTO posts
-               (description, platforms, versions, selected_version, image_path, status, created_at)
-               VALUES (?,?,?,?,?,?,?)""",
+               (description, platforms, versions, selected_version, image_path, status, created_at, scheduled_for)
+               VALUES (?,?,?,?,?,?,?,?)""",
             (req.description, json.dumps(req.platforms), json.dumps(req.versions),
-             req.selected_version, req.image_path, "draft", now)
+             req.selected_version, req.image_path, status, now, req.scheduled_for)
         )
         conn.commit()
-        return {"id": cur.lastrowid, "status": "draft", "created_at": now}
+        return {"id": cur.lastrowid, "status": status, "created_at": now}
 
 @app.get("/api/drafts")
 async def get_drafts():
@@ -393,6 +520,11 @@ async def update_draft(post_id: int, req: UpdateDraftRequest):
             updates["image_path"] = req.image_path
         if req.status is not None:
             updates["status"] = req.status
+        if req.scheduled_for is not None:
+            # empty string clears the schedule (back to plain draft)
+            updates["scheduled_for"] = req.scheduled_for or None
+            if not req.status:
+                updates["status"] = "scheduled" if req.scheduled_for else "draft"
         if updates:
             set_clause = ", ".join(f"{k}=?" for k in updates)
             conn.execute(f"UPDATE posts SET {set_clause} WHERE id=?",
@@ -658,13 +790,16 @@ async def post_now(req: PostNowRequest):
     selected = post["versions"].get(post["selected_version"], {})
     results = {}
 
+    PLATFORM_KEY_MAP = {"linkedin": "li", "facebook": "fb", "instagram": "ig"}
+
     for platform in req.platforms:
         conn_data = connections.get(platform)
         if not conn_data:
             results[platform] = {"success": False, "error": f"{platform} not connected"}
             continue
         try:
-            text = selected["content"].get(platform, "")
+            content_key = PLATFORM_KEY_MAP.get(platform, platform)
+            text = selected["content"].get(content_key, "")
             if platform == "linkedin":
                 await post_to_linkedin(text, post.get("image_path"),
                                       conn_data["access_token"], conn_data["user_id"])
@@ -767,6 +902,18 @@ async def save_credentials(req: CredentialsRequest):
     else:
         raise HTTPException(400, f"Unknown platform: {req.platform}")
     return {"success": True, "platform": req.platform}
+
+class CompetitorsRequest(BaseModel):
+    competitors: str   # newline- or comma-separated names/sites
+
+@app.get("/api/settings/competitors")
+async def get_competitors_setting():
+    return {"competitors": get_setting("COMPETITORS"), "list": get_competitors()}
+
+@app.post("/api/settings/competitors")
+async def save_competitors_setting(req: CompetitorsRequest):
+    set_setting("COMPETITORS", req.competitors.strip())
+    return {"success": True, "list": get_competitors()}
 
 @app.delete("/api/settings/credentials/{platform}")
 async def delete_credentials(platform: str):

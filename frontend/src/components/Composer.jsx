@@ -1,3 +1,6 @@
+import { useState } from 'react'
+import axios from 'axios'
+
 const PLATFORM_STEPS = [
   'Searching web for real data',
   'Engineering content brief',
@@ -7,19 +10,138 @@ const PLATFORM_STEPS = [
 export default function Composer({
   description, setDescription,
   platforms, setPlatforms,
-  onGenerate, generating, generationStep
+  onGenerate, generating, generationStep,
+  showToast
 }) {
+  const [mode, setMode] = useState('write')   // 'write' | 'research'
+  const [seed, setSeed] = useState('')
+  const [researching, setResearching] = useState(false)
+  const [ideas, setIdeas] = useState([])
+
   const togglePlatform = (p) => {
     setPlatforms(prev =>
       prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]
     )
   }
 
+  // Seed mode: enrich a short topic into a full description from Google + competitors + site
+  const enrichSeed = async () => {
+    if (!seed.trim()) { showToast('Enter a topic to research', 'error'); return }
+    setResearching(true)
+    setIdeas([])
+    try {
+      const { data } = await axios.post('/api/research', {
+        mode: 'seed', seed: seed.trim(), platforms
+      })
+      setDescription(data.description)
+      const src = [data.web_used && 'web', data.competitors_used && 'competitors']
+        .filter(Boolean).join(' + ')
+      showToast(`✓ Description researched${src ? ` (${src})` : ''}`, 'success')
+    } catch (e) {
+      showToast(e.response?.data?.detail || 'Research failed', 'error')
+    } finally {
+      setResearching(false)
+    }
+  }
+
+  // Autonomous mode: suggest several ready post ideas to pick from
+  const suggestIdeas = async () => {
+    setResearching(true)
+    setIdeas([])
+    try {
+      const { data } = await axios.post('/api/research', {
+        mode: 'auto', platforms
+      })
+      setIdeas(data.ideas || [])
+      if (!data.ideas?.length) showToast('No ideas returned — try again', 'error')
+    } catch (e) {
+      showToast(e.response?.data?.detail || 'Idea generation failed', 'error')
+    } finally {
+      setResearching(false)
+    }
+  }
+
+  const pickIdea = (idea) => {
+    setDescription(idea.description)
+    setIdeas([])
+    showToast('Idea loaded — tweak it or generate', 'success')
+  }
+
   return (
     <>
       <div className="panel-section" style={{ paddingTop: '1.25rem' }}>
         <div className="section-label">Compose Post</div>
-        <label>What do you want to post about?</label>
+
+        {/* Mode toggle: write yourself vs auto-research */}
+        <div className="compose-mode-toggle">
+          <button
+            className={`mode-btn ${mode === 'write' ? 'active' : ''}`}
+            onClick={() => setMode('write')}
+          >
+            ✍️ Write myself
+          </button>
+          <button
+            className={`mode-btn ${mode === 'research' ? 'active' : ''}`}
+            onClick={() => setMode('research')}
+          >
+            🔍 Auto-research
+          </button>
+        </div>
+
+        {mode === 'research' && (
+          <div className="research-box">
+            <label style={{ marginTop: 4 }}>Topic / angle (optional)</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input
+                type="text"
+                value={seed}
+                onChange={e => setSeed(e.target.value)}
+                placeholder="e.g. hiring confidence, employee retention"
+                style={{ flex: 1 }}
+                onKeyDown={e => e.key === 'Enter' && enrichSeed()}
+              />
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={enrichSeed}
+                disabled={researching}
+                style={{ whiteSpace: 'nowrap' }}
+              >
+                {researching ? <span className="spin" /> : '→'} Enrich
+              </button>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
+              <div className="divider" style={{ flex: 1 }} />
+              <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>OR</span>
+              <div className="divider" style={{ flex: 1 }} />
+            </div>
+            <button
+              className="btn btn-secondary"
+              onClick={suggestIdeas}
+              disabled={researching}
+              style={{ width: '100%' }}
+            >
+              {researching ? <><span className="spin" /> Researching…</> : '✦ Suggest ideas for me'}
+            </button>
+            <p style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 6 }}>
+              Pulls from Google, your competitors, and confiscore.com.
+            </p>
+
+            {ideas.length > 0 && (
+              <div className="idea-list">
+                {ideas.map((idea, i) => (
+                  <div key={i} className="idea-card" onClick={() => pickIdea(idea)}>
+                    <div className="idea-title">{idea.title}</div>
+                    <div className="idea-desc">{idea.description}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <label style={{ marginTop: mode === 'research' ? 10 : 0 }}>
+          {mode === 'research' ? 'Researched description (edit freely)' : 'What do you want to post about?'}
+        </label>
         <textarea
           rows={5}
           value={description}

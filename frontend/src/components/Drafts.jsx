@@ -8,7 +8,7 @@ const VOICE_NAMES = {
   inspiring: 'Inspiring'
 }
 
-export default function Drafts({ drafts, connections, onRefresh, showToast }) {
+export default function Drafts({ drafts, connections, onRefresh, showToast, onOpen }) {
   const handleDelete = async (id) => {
     try {
       await axios.delete(`/api/drafts/${id}`)
@@ -66,6 +66,12 @@ export default function Drafts({ drafts, connections, onRefresh, showToast }) {
               <div className="draft-preview-text">{previewText}</div>
             )}
             <div className="draft-actions">
+              <button
+                className="btn btn-primary"
+                onClick={() => onOpen(draft)}
+              >
+                ↗ Open
+              </button>
               <button
                 className="btn btn-danger"
                 onClick={() => handleDelete(draft.id)}
