@@ -15,17 +15,30 @@ const PLATFORMS = [
     hint: 'Create an app at LinkedIn Developer Portal → Products → Sign In with LinkedIn using OpenID Connect',
   },
   {
+    key: 'facebook',
+    label: 'Facebook',
+    shortLabel: 'FB',
+    color: '#1877F2',
+    bgColor: '#E7F0FF',
+    authUrl: '/api/auth/facebook',
+    idLabel: 'App ID',
+    secretLabel: 'App Secret',
+    helpUrl: 'https://developers.facebook.com/apps',
+    hint: 'Create a Meta App → Add "Facebook Login for Business" → add redirect: http://localhost:8000/api/auth/facebook/callback',
+  },
+  {
     key: 'instagram',
     label: 'Instagram',
     shortLabel: 'IG',
     gradient: 'linear-gradient(135deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888)',
     color: '#E1306C',
     bgColor: '#FFF0F6',
-    authUrl: '/api/auth/instagram',
+    authUrl: '/api/auth/facebook',   // Instagram uses the same Meta OAuth flow
     idLabel: 'App ID',
     secretLabel: 'App Secret',
     helpUrl: 'https://developers.facebook.com/apps',
-    hint: 'Create a Meta/Facebook app → Add Instagram Basic Display product',
+    hint: 'Same Meta App as Facebook — connect Facebook first, Instagram links automatically if your IG account is a Business/Creator account linked to the Page.',
+    linkedTo: 'facebook',  // signals it\'s auto-connected via Facebook OAuth
   },
 ]
 
@@ -182,8 +195,11 @@ function CredentialsModal({ platform, onClose, onSaved }) {
 }
 
 export default function Connections({ connections, onConnect, compact = false }) {
-  const [credStatus, setCredStatus] = useState({ linkedin: false, instagram: false })
+  const [credStatus, setCredStatus] = useState({ linkedin: false, facebook: false, instagram: false })
   const [modalPlatform, setModalPlatform] = useState(null)
+  const [imgbbKey, setImgbbKey] = useState('')
+  const [savingImgbb, setSavingImgbb] = useState(false)
+  const [showImgbb, setShowImgbb] = useState(false)
 
   useEffect(() => {
     axios.get('/api/settings/status')
@@ -191,7 +207,26 @@ export default function Connections({ connections, onConnect, compact = false })
       .catch(() => {})
   }, [])
 
+  const handleSaveImgbb = async () => {
+    if (!imgbbKey.trim()) return
+    setSavingImgbb(true)
+    try {
+      await axios.post('/api/settings/imgbb', { api_key: imgbbKey.trim() })
+      setShowImgbb(false)
+      setImgbbKey('')
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setSavingImgbb(false)
+    }
+  }
+
   const handleConnect = (platform) => {
+    // Instagram is linked automatically through Facebook OAuth
+    if (platform.linkedTo) {
+      const parentPlatform = PLATFORMS.find(p => p.key === platform.linkedTo)
+      if (parentPlatform) return handleConnect(parentPlatform)
+    }
     if (credStatus[platform.key]) {
       // Credentials already stored — go straight to OAuth
       window.location.href = platform.authUrl
@@ -290,11 +325,12 @@ export default function Connections({ connections, onConnect, compact = false })
 
       {PLATFORMS.map(p => {
         const connected = connections[p.key]
-        const hasCredentials = credStatus[p.key]
+        const hasCredentials = credStatus[p.key] || (p.linkedTo && credStatus[p.linkedTo])
+        const isAutoLinked = p.linkedTo && credStatus[p.linkedTo]
         return (
           <div
             key={p.key}
-            className={`connection-card ${connected ? `connected-${p.key === 'linkedin' ? 'li' : 'ig'}` : ''}`}
+            className={`connection-card ${connected ? `connected-${p.key === 'linkedin' ? 'li' : p.key === 'facebook' ? 'fb' : 'ig'}` : ''}`}
           >
             <div style={{
               width: 36, height: 36, borderRadius: 8,
@@ -310,11 +346,18 @@ export default function Connections({ connections, onConnect, compact = false })
               <div className={`conn-status ${connected ? 'connected' : ''}`}>
                 {connected
                   ? `✓ Connected as ${connected.username || 'account'}`
-                  : hasCredentials
-                    ? 'Credentials saved — ready to connect'
-                    : 'No credentials configured'
+                  : isAutoLinked
+                    ? 'Links automatically via Facebook — connect Facebook to enable'
+                    : hasCredentials
+                      ? 'Credentials saved — ready to connect'
+                      : 'No credentials configured'
                 }
               </div>
+              {p.key === 'instagram' && connected && (
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 3 }}>
+                  Posting requires an image + imgbb API key
+                </div>
+              )}
             </div>
 
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -324,10 +367,10 @@ export default function Connections({ connections, onConnect, compact = false })
                 </button>
               ) : (
                 <>
-                  {hasCredentials && (
+                  {hasCredentials && !isAutoLinked && (
                     <button
                       className="btn btn-sm"
-                      onClick={() => handleClearCreds(p.key)}
+                      onClick={() => handleClearCreds(p.linkedTo || p.key)}
                       style={{ fontSize: 11, borderColor: 'var(--border2)', color: 'var(--white-muted)' }}
                       title="Clear saved credentials"
                     >
@@ -339,7 +382,7 @@ export default function Connections({ connections, onConnect, compact = false })
                     onClick={() => handleConnect(p)}
                     style={{ borderColor: p.color, color: p.color }}
                   >
-                    {hasCredentials ? 'Connect →' : 'Setup →'}
+                    {isAutoLinked ? 'Via Facebook →' : hasCredentials ? 'Connect →' : 'Setup →'}
                   </button>
                 </>
               )}
@@ -347,6 +390,59 @@ export default function Connections({ connections, onConnect, compact = false })
           </div>
         )
       })}
+
+      {/* imgbb API key for Instagram image hosting */}
+      <div style={{
+        marginTop: 16, padding: '12px 14px',
+        background: 'rgba(255,255,255,0.04)',
+        border: '1px solid rgba(255,255,255,0.1)',
+        borderRadius: 10,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: showImgbb ? 12 : 0 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.8)' }}>
+              imgbb API Key
+            </div>
+            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>
+              Required for Instagram image posts.{' '}
+              <a href="https://api.imgbb.com" target="_blank" rel="noreferrer"
+                style={{ color: '#E1306C', textDecoration: 'none' }}>Get free key →</a>
+            </div>
+          </div>
+          <button
+            className="btn btn-sm"
+            onClick={() => setShowImgbb(v => !v)}
+            style={{ fontSize: 11, borderColor: 'rgba(255,255,255,0.2)', color: 'rgba(255,255,255,0.5)' }}
+          >
+            {showImgbb ? 'Cancel' : 'Set Key'}
+          </button>
+        </div>
+        {showImgbb && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              type="text"
+              value={imgbbKey}
+              onChange={e => setImgbbKey(e.target.value)}
+              placeholder="Paste your imgbb API key"
+              style={{
+                flex: 1, background: 'rgba(255,255,255,0.06)',
+                border: '1px solid rgba(255,255,255,0.12)',
+                borderRadius: 7, padding: '8px 10px',
+                color: '#fff', fontSize: 12,
+                fontFamily: 'var(--font-mono)', outline: 'none',
+              }}
+            />
+            <button
+              className="btn btn-sm"
+              onClick={handleSaveImgbb}
+              disabled={savingImgbb || !imgbbKey.trim()}
+              style={{ borderColor: '#E1306C', color: '#E1306C', whiteSpace: 'nowrap' }}
+            >
+              {savingImgbb ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+        )}
+      </div>
 
       <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12, lineHeight: 1.6 }}>
         🔒 OAuth 2.0 — your password never touches this app. Credentials are stored in a local SQLite database only.

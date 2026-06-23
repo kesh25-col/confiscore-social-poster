@@ -143,7 +143,7 @@ function InstagramMock({ text, imageUrl, onImageClick }) {
 export default function Preview({
   content, platforms, previewPlatform, setPreviewPlatform,
   imageUrl, setImageUrl, setImagePath, showToast,
-  description
+  description, voiceKey
 }) {
   const fileInputRef = useRef()
   const [aiUrl, setAiUrl] = useState(null)
@@ -186,8 +186,9 @@ export default function Preview({
       const { data } = await axios.post('/api/poster/ai', {
         description,
         platform: previewPlatform,
-        post_text: postText,   // the SELECTED voice drives the poster
-        format: aiFormat
+        post_text: postText,
+        format: aiFormat,
+        voice: voiceKey || 'brand',
       })
       setAiUrl(data.image)
       setAiModel(data.model)
