@@ -8,6 +8,7 @@ import Connections from './components/Connections'
 import Drafts from './components/Drafts'
 import Calendar from './components/Calendar'
 import Settings from './components/Settings'
+import Login from './components/Login'
 import Toast from './components/Toast'
 
 const API = '/api'
@@ -16,6 +17,7 @@ export default function App() {
   const [view, setView] = useState('compose') // compose | calendar | drafts | settings
   const [scheduleAt, setScheduleAt] = useState('')
   const [scheduling, setScheduling] = useState(false)
+  const [authState, setAuthState] = useState('loading') // loading | locked | open
   const [platforms, setPlatforms] = useState(['li'])
   const [description, setDescription] = useState('')
   const [generating, setGenerating] = useState(false)
@@ -32,12 +34,40 @@ export default function App() {
   const [posting, setPosting] = useState(false)
   const [savedDraftId, setSavedDraftId] = useState(null)
 
-  // Load connections and drafts on mount
+  // Decide whether a login gate is needed, then load data
   useEffect(() => {
+    // If any request comes back 401, the token is missing/stale — show login.
+    const interceptor = axios.interceptors.response.use(
+      r => r,
+      err => {
+        if (err.response?.status === 401) {
+          localStorage.removeItem('cs_auth')
+          delete axios.defaults.headers.common['X-Auth-Token']
+          setAuthState('locked')
+        }
+        return Promise.reject(err)
+      }
+    )
+
+    ;(async () => {
+      try {
+        const { data } = await axios.get(`${API}/auth-required`)
+        if (data.required && !localStorage.getItem('cs_auth')) {
+          setAuthState('locked')
+          return
+        }
+      } catch { /* if probe fails, fall through and let requests decide */ }
+      setAuthState('open')
+      initData()
+    })()
+
+    return () => axios.interceptors.response.eject(interceptor)
+  }, [])
+
+  // Initial data load + OAuth return handling (runs once the gate is open)
+  const initData = () => {
     loadConnections()
     loadDrafts()
-
-    // Check if returning from OAuth
     const params = new URLSearchParams(window.location.search)
     const connected = params.get('connected')
     if (connected) {
@@ -48,7 +78,12 @@ export default function App() {
       window.history.replaceState({}, '', window.location.pathname)
       loadConnections()
     }
-  }, [])
+  }
+
+  const handleLoginSuccess = () => {
+    setAuthState('open')
+    initData()
+  }
 
   const loadConnections = async () => {
     try {
@@ -248,6 +283,18 @@ export default function App() {
   const selectedContent = versions && selectedVersion
     ? versions[selectedVersion]?.content
     : null
+
+  // Gate: while probing, show a minimal splash; if locked, show login.
+  if (authState === 'loading') {
+    return (
+      <div className="login-screen">
+        <div className="loading-spinner" />
+      </div>
+    )
+  }
+  if (authState === 'locked') {
+    return <Login onSuccess={handleLoginSuccess} />
+  }
 
   return (
     <div className="app">
