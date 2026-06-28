@@ -10,8 +10,8 @@ async function rasterizeSvgToPng(svgDataUrl) {
     img.onerror = () => reject(new Error('Could not load SVG for rasterization'))
     img.src = svgDataUrl
   })
-  const w = img.naturalWidth || 1200
-  const h = img.naturalHeight || 627
+  const w = img.naturalWidth || 1080
+  const h = img.naturalHeight || 1350
   const canvas = document.createElement('canvas')
   canvas.width = w
   canvas.height = h
@@ -143,7 +143,7 @@ function InstagramMock({ text, imageUrl, onImageClick }) {
 export default function Preview({
   content, platforms, previewPlatform, setPreviewPlatform,
   imageUrl, setImageUrl, setImagePath, showToast,
-  description
+  description, voice
 }) {
   const fileInputRef = useRef()
   const [aiUrl, setAiUrl] = useState(null)
@@ -187,7 +187,8 @@ export default function Preview({
         description,
         platform: previewPlatform,
         post_text: postText,   // the SELECTED voice drives the poster
-        format: aiFormat
+        format: aiFormat,
+        voice: voice || 'brand'   // voice-guided layout (debasis|brand|data|inspiring)
       })
       setAiUrl(data.image)
       setAiModel(data.model)

@@ -27,6 +27,7 @@ except ImportError:
     print("! python-dotenv not installed")
 
 from guidelines import get_guideline, get_all_guidelines, get_facts
+from poster_prompts import build_single_prompt, build_carousel_prompt, PLATFORM_DIMS
 print("✓ Guidelines loaded")
 
 import anthropic
@@ -37,6 +38,11 @@ LI_CLIENT_ID     = os.environ.get("LINKEDIN_CLIENT_ID", "")
 LI_CLIENT_SECRET = os.environ.get("LINKEDIN_CLIENT_SECRET", "")
 IG_APP_ID        = os.environ.get("INSTAGRAM_APP_ID", "")
 IG_APP_SECRET    = os.environ.get("INSTAGRAM_APP_SECRET", "")
+FB_APP_ID        = os.environ.get("FACEBOOK_APP_ID", "")
+FB_APP_SECRET    = os.environ.get("FACEBOOK_APP_SECRET", "")
+FB_API_VERSION   = "v21.0"
+META_GRAPH       = f"https://graph.facebook.com/{FB_API_VERSION}"
+IMGBB_API_KEY    = os.environ.get("IMGBB_API_KEY", "")  # public-URL host for Instagram posting
 
 # ── Deployment config (all default to local dev — production sets these via env) ──
 # Render injects RENDER_EXTERNAL_URL automatically, so a deploy needs zero URL config.
@@ -668,65 +674,112 @@ async def linkedin_callback(code: str, state: str):
     return RedirectResponse(f"{FRONTEND_URL}/?connected=linkedin")
 
 # ── Instagram OAuth ────────────────────────────────────────────────────────────
+# Instagram publishing uses the Instagram Graph API, which rides on the SAME Meta
+# OAuth as Facebook (one app, one login). So "connect Instagram" just runs the
+# Facebook flow — the callback links the Instagram Business account on your Page.
 @app.get("/api/auth/instagram")
 async def instagram_auth():
-    app_id = get_setting("INSTAGRAM_APP_ID") or IG_APP_ID
+    return RedirectResponse("/api/auth/facebook")
+
+# ── Facebook OAuth (posts to a Facebook Page + linked Instagram via Graph API) ───
+@app.get("/api/auth/facebook")
+async def facebook_auth():
+    app_id = get_setting("FACEBOOK_APP_ID") or FB_APP_ID
     if not app_id:
-        raise HTTPException(400, "Instagram not configured — add credentials via the app settings")
+        raise HTTPException(400, "Facebook not configured — add credentials via the app settings")
     state = secrets.token_urlsafe(32)
     with get_db() as conn:
-        conn.execute("INSERT INTO oauth_state VALUES (?,?,?)", (state, "instagram", time.time()))
+        conn.execute("INSERT INTO oauth_state VALUES (?,?,?)", (state, "facebook", time.time()))
         conn.commit()
     params = {
         "client_id": app_id,
-        "redirect_uri": f"{BACKEND_URL}/api/auth/instagram/callback",
-        "scope": "instagram_basic,instagram_content_publish",
+        "redirect_uri": f"{BACKEND_URL}/api/auth/facebook/callback",
+        "state": state,
+        # Page publishing + Instagram publishing (IG rides on the same Meta login).
+        "scope": "pages_show_list,pages_manage_posts,pages_read_engagement,"
+                 "instagram_basic,instagram_content_publish,business_management,public_profile",
         "response_type": "code",
-        "state": state
     }
-    url = "https://api.instagram.com/oauth/authorize?" + "&".join(f"{k}={v}" for k, v in params.items())
+    url = f"https://www.facebook.com/{FB_API_VERSION}/dialog/oauth?" + urlencode(params)
     return RedirectResponse(url)
 
-@app.get("/api/auth/instagram/callback")
-async def instagram_callback(code: str, state: str):
+@app.get("/api/auth/facebook/callback")
+async def facebook_callback(code: str, state: str):
     with get_db() as conn:
         row = conn.execute("SELECT * FROM oauth_state WHERE state=? AND platform=?",
-                          (state, "instagram")).fetchone()
+                          (state, "facebook")).fetchone()
         if not row or time.time() - row["created_at"] > 600:
             raise HTTPException(400, "Invalid or expired OAuth state")
         conn.execute("DELETE FROM oauth_state WHERE state=?", (state,))
         conn.commit()
 
-    app_id     = get_setting("INSTAGRAM_APP_ID")     or IG_APP_ID
-    app_secret = get_setting("INSTAGRAM_APP_SECRET") or IG_APP_SECRET
+    app_id     = get_setting("FACEBOOK_APP_ID")     or FB_APP_ID
+    app_secret = get_setting("FACEBOOK_APP_SECRET") or FB_APP_SECRET
 
     async with httpx.AsyncClient() as client:
-        token_resp = await client.post(
-            "https://api.instagram.com/oauth/access_token",
-            data={
+        # 1) Exchange code for a short-lived user access token.
+        token_resp = await client.get(
+            f"https://graph.facebook.com/{FB_API_VERSION}/oauth/access_token",
+            params={
                 "client_id": app_id,
                 "client_secret": app_secret,
-                "grant_type": "authorization_code",
-                "redirect_uri": f"{BACKEND_URL}/api/auth/instagram/callback",
+                "redirect_uri": f"{BACKEND_URL}/api/auth/facebook/callback",
                 "code": code,
             }
         )
         token_data = token_resp.json()
-        access_token = token_data.get("access_token")
-        user_id = str(token_data.get("user_id", ""))
-        if not access_token:
-            raise HTTPException(400, f"Instagram token exchange failed: {token_data}")
+        user_token = token_data.get("access_token")
+        if not user_token:
+            raise HTTPException(400, f"Facebook token exchange failed: {token_data}")
 
+        # 2) Find the Pages this user manages, including any linked Instagram account.
+        pages_resp = await client.get(
+            f"{META_GRAPH}/me/accounts",
+            params={
+                "fields": "id,name,access_token,instagram_business_account",
+                "access_token": user_token,
+            }
+        )
+        pages = pages_resp.json().get("data", [])
+        if not pages:
+            raise HTTPException(400, "No Facebook Pages found for this account. "
+                                     "You must have a Facebook Page (you post to a Page, not a profile).")
+        # Use the first Page. (A Page picker can be added later if you manage several.)
+        page = pages[0]
+        page_id    = page.get("id", "")
+        page_token = page.get("access_token", "")
+        page_name  = page.get("name", "Facebook Page")
+
+        # 3) If an Instagram Business account is linked to the Page, capture it too.
+        ig_account = page.get("instagram_business_account")
+        ig_username = None
+        if ig_account:
+            ig_resp = await client.get(
+                f"{META_GRAPH}/{ig_account['id']}",
+                params={"fields": "username", "access_token": page_token}
+            )
+            ig_username = ig_resp.json().get("username", "Instagram Account")
+
+    now = datetime.utcnow().isoformat()
     with get_db() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO connections
                (platform, access_token, user_id, username, connected_at)
                VALUES (?,?,?,?,?)""",
-            ("instagram", access_token, user_id, "Instagram Account", datetime.utcnow().isoformat())
+            ("facebook", page_token, page_id, page_name, now)
         )
+        if ig_account:
+            # Instagram publishing uses the PAGE token + the IG business account id.
+            conn.execute(
+                """INSERT OR REPLACE INTO connections
+                   (platform, access_token, user_id, username, connected_at)
+                   VALUES (?,?,?,?,?)""",
+                ("instagram", page_token, ig_account["id"], ig_username or "Instagram Account", now)
+            )
         conn.commit()
 
-    return RedirectResponse(f"{FRONTEND_URL}/?connected=instagram")
+    connected_param = "facebook" + (",instagram" if ig_account else "")
+    return RedirectResponse(f"{FRONTEND_URL}/?connected={connected_param}")
 
 # ── Disconnect ─────────────────────────────────────────────────────────────────
 @app.delete("/api/connections/{platform}")
@@ -810,16 +863,87 @@ def _li_text_body(author, text):
         "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"}
     }
 
-# ── Post to Instagram ──────────────────────────────────────────────────────────
-async def post_to_instagram(caption: str, image_path: Optional[str], access_token: str, user_id: str):
-    if not image_path:
-        raise Exception("Instagram requires an image")
-
+# ── imgbb image upload (public URL needed by the Instagram Graph API) ─────────────
+async def upload_to_imgbb(image_path: str) -> str:
+    """Upload a local image to imgbb and return its public URL."""
+    key = get_setting("IMGBB_API_KEY") or IMGBB_API_KEY
+    if not key:
+        raise Exception(
+            "IMGBB_API_KEY not configured. "
+            "Get a free key at https://api.imgbb.com and add it in Settings."
+        )
     image_file = UPLOAD_DIR / image_path
     if not image_file.exists():
-        raise Exception("Image file not found")
+        raise Exception(f"Image file not found: {image_path}")
+    with open(image_file, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            "https://api.imgbb.com/1/upload",
+            data={"key": key, "image": b64}
+        )
+        data = resp.json()
+    if not data.get("success"):
+        raise Exception(f"imgbb upload failed: {data.get('error', data)}")
+    return data["data"]["url"]
 
-    raise Exception("Instagram posting requires a public image URL. Host your image publicly first.")
+# ── Post to Facebook Page (Graph API) ─────────────────────────────────────────────
+async def post_to_facebook(text: str, image_path: Optional[str], access_token: str, page_id: str):
+    async with httpx.AsyncClient(timeout=30) as client:
+        if image_path:
+            image_file = UPLOAD_DIR / image_path
+            if image_file.exists():
+                with open(image_file, "rb") as f:
+                    img_bytes = f.read()
+                resp = await client.post(
+                    f"{META_GRAPH}/{page_id}/photos",
+                    params={"access_token": access_token},
+                    data={"caption": text, "published": "true"},
+                    files={"source": ("image.png", img_bytes, "image/png")},
+                )
+                result = resp.json()
+                if "id" not in result:
+                    raise Exception(f"Facebook photo post failed: {result}")
+                return result
+        # Text-only post to the Page feed.
+        resp = await client.post(
+            f"{META_GRAPH}/{page_id}/feed",
+            params={"access_token": access_token},
+            data={"message": text},
+        )
+        result = resp.json()
+        if "id" not in result:
+            raise Exception(f"Facebook post failed: {result}")
+        return result
+
+# ── Post to Instagram (Graph API — Business account, via imgbb public URL) ────────
+async def post_to_instagram(caption: str, image_path: Optional[str], access_token: str, ig_user_id: str):
+    if not image_path:
+        raise Exception("Instagram requires an image. Please add an image before posting to Instagram.")
+
+    # Instagram Graph API must fetch the image from a public URL.
+    public_url = await upload_to_imgbb(image_path)
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        # Step 1: create the media container
+        media_resp = await client.post(
+            f"{META_GRAPH}/{ig_user_id}/media",
+            params={"image_url": public_url, "caption": caption, "access_token": access_token}
+        )
+        media_data = media_resp.json()
+        creation_id = media_data.get("id")
+        if not creation_id:
+            raise Exception(f"Instagram media container creation failed: {media_data}")
+
+        # Step 2: publish the container
+        publish_resp = await client.post(
+            f"{META_GRAPH}/{ig_user_id}/media_publish",
+            params={"creation_id": creation_id, "access_token": access_token}
+        )
+        publish_data = publish_resp.json()
+        if "id" not in publish_data:
+            raise Exception(f"Instagram publish failed: {publish_data}")
+        return publish_data
 
 # ── Post now ───────────────────────────────────────────────────────────────────
 @app.post("/api/post")
@@ -852,6 +976,9 @@ async def post_now(req: PostNowRequest):
             text = selected["content"].get(content_key, "")
             if platform == "linkedin":
                 await post_to_linkedin(text, post.get("image_path"),
+                                      conn_data["access_token"], conn_data["user_id"])
+            elif platform == "facebook":
+                await post_to_facebook(text, post.get("image_path"),
                                       conn_data["access_token"], conn_data["user_id"])
             elif platform == "instagram":
                 await post_to_instagram(text, post.get("image_path"),
@@ -933,10 +1060,13 @@ class CredentialsRequest(BaseModel):
 @app.get("/api/settings/status")
 async def settings_status():
     li_id = get_setting("LINKEDIN_CLIENT_ID") or LI_CLIENT_ID
-    ig_id = get_setting("INSTAGRAM_APP_ID")   or IG_APP_ID
+    fb_id = get_setting("FACEBOOK_APP_ID")    or FB_APP_ID
+    imgbb = get_setting("IMGBB_API_KEY")      or IMGBB_API_KEY
     return {
         "linkedin":  bool(li_id),
-        "instagram": bool(ig_id),
+        "facebook":  bool(fb_id),
+        "instagram": bool(fb_id),   # Instagram shares the Facebook/Meta app
+        "imgbb":     bool(imgbb),
     }
 
 @app.post("/api/settings/credentials")
@@ -946,12 +1076,22 @@ async def save_credentials(req: CredentialsRequest):
     if req.platform == "linkedin":
         set_setting("LINKEDIN_CLIENT_ID",     req.client_id.strip())
         set_setting("LINKEDIN_CLIENT_SECRET", req.client_secret.strip())
-    elif req.platform == "instagram":
-        set_setting("INSTAGRAM_APP_ID",     req.client_id.strip())
-        set_setting("INSTAGRAM_APP_SECRET", req.client_secret.strip())
+    elif req.platform in ("facebook", "instagram"):
+        # Instagram publishing uses the same Meta app as Facebook.
+        set_setting("FACEBOOK_APP_ID",     req.client_id.strip())
+        set_setting("FACEBOOK_APP_SECRET", req.client_secret.strip())
     else:
         raise HTTPException(400, f"Unknown platform: {req.platform}")
     return {"success": True, "platform": req.platform}
+
+@app.post("/api/settings/imgbb")
+async def save_imgbb_key(request: Request):
+    body = await request.json()
+    key = body.get("api_key", "").strip()
+    if not key:
+        raise HTTPException(400, "API key is required")
+    set_setting("IMGBB_API_KEY", key)
+    return {"success": True}
 
 class CompetitorsRequest(BaseModel):
     competitors: str   # newline- or comma-separated names/sites
@@ -970,9 +1110,9 @@ async def delete_credentials(platform: str):
     if platform == "linkedin":
         set_setting("LINKEDIN_CLIENT_ID",     "")
         set_setting("LINKEDIN_CLIENT_SECRET", "")
-    elif platform == "instagram":
-        set_setting("INSTAGRAM_APP_ID",     "")
-        set_setting("INSTAGRAM_APP_SECRET", "")
+    elif platform in ("facebook", "instagram"):
+        set_setting("FACEBOOK_APP_ID",     "")
+        set_setting("FACEBOOK_APP_SECRET", "")
     return {"success": True}
 
 
@@ -981,124 +1121,9 @@ class AIPosterRequest(BaseModel):
     platform: str = "li"
     post_text: Optional[str] = None
     format: str = "single"   # "single" | "carousel"
+    voice: str = "brand"     # debasis | brand | data | inspiring
 
-# Per-platform poster dimensions (W, H, label) — each platform's recommended feed image size.
-PLATFORM_DIMS = {
-    "li": (1200, 627, "LinkedIn landscape"),
-    "fb": (1200, 630, "Facebook landscape"),
-    "ig": (1080, 1080, "Instagram square"),
-}
-
-SVG_BRAND_BLOCK = """COMPANY: Confiscore — B2B SaaS that measures human confidence on a 0–1000 scale using
-patented Valence-Arousal psycho-technology. Used by HR teams, recruiters, and business leaders.
-
-BRAND DESIGN SYSTEM (fixed Confiscore palette — always use exactly these colours):
-- Background: deep navy gradient <linearGradient> from #070B1B to #0D1433, filling the whole canvas.
-- Primary accent: electric green #38EF7D — use boldly on hero numbers/headlines and the left accent bar.
-- Secondary accents: electric blue #3B5BDB and blue-white #99ABFF for body/labels.
-- Muted "before" values: grey #5A6B82. Footer/secondary text: #8FA8C0.
-- A thin 8px green accent bar down the left edge of the canvas.
-- Typography: font-family="system-ui, -apple-system, Segoe UI, sans-serif" ONLY (no external fonts).
-- Subtle geometric accents only: thin lines, concentric circles, faint dot grid — never photos or people.
-- Use the EXACT numbers from the content. Never invent data.
-
-CHARTS — when the data suits it, draw a simple clean chart instead of plain text (always brand colours):
-- A before→after stat → a thin horizontal progress bar (grey track, green fill to the % value).
-- A 0–1000 score → a horizontal gauge bar with a marker at the score, or a donut arc.
-- A set of comparable values → short horizontal bars of proportional length with the number at the end.
-- Keep charts minimal and precise — align to a grid, label clearly, no clutter.
-- CHART LABELS MUST NOT OVERLAP THE BAR. A bar's track ends at a fixed x; any end-label (e.g. "Predictive",
-  "Reactive") goes to the RIGHT of where the bar track ENDS, with ≥ 12px gap — never on top of the fill.
-  If space is tight, place the label ABOVE or BELOW the bar instead. Reserve label width before sizing the bar.
-- A value label at the end of a bar must sit just past the fill's end, not over coloured fill.
-
-CRITICAL — PRECISION (the previous version had misaligned arrows and uneven boxes; fix this):
-- BEFORE → AFTER pairs: put "before", the arrow, and "after" on ONE shared baseline (identical y).
-  Draw the arrow as a real shape (a <line> + small <polygon> head) OR a "→" glyph vertically centred to the
-  number's optical middle — never floating above or below. Use consistent horizontal gaps around it.
-- CARD GRID: every card identical width AND height, snapped to a strict grid with EQUAL gutters.
-  Compute: card_w = (zone_width - gutter) / cols; card_h = (zone_height - gutter) / rows. Reuse these exact
-  values for every card. Align all card x/y to the grid — no card offset by a few px.
-- Center the content inside each card (use text-anchor="middle" on a shared center x).
-
-CRITICAL — SVG TEXT DOES NOT WRAP. You MUST prevent text overflow:
-- SVG <text> never auto-wraps. A long string WILL run off its area and overlap other elements.
-- Break every long line into multiple <text> elements stacked vertically (increment y by ~1.15x font-size).
-- Budget characters per line by font size. At the given width, a line must satisfy roughly:
-  max_chars ≈ (available_width_px) / (font_size_px * 0.6). Stay UNDER that. When unsure, use fewer.
-- Headlines: keep each line SHORT (≤ 18 characters for 60-90px text). Prefer 2-3 short lines over 1 long line.
-- A text element placed inside a card or column MUST fit within that box's width — measure before placing.
-- Estimate text width as chars * font_size * 0.6 and confirm it fits the element's width before committing.
-- Never let any text cross into a neighbouring card, column, or the canvas edge. Leave ≥ 40px margins."""
-
-
-def _build_single_prompt(req: AIPosterRequest, W: int, H: int, platform_str: str) -> str:
-    primary = (req.post_text or req.description or "").strip()
-    context = req.description.strip() if (req.post_text and req.description) else ""
-    return f"""You are a world-class graphic designer who builds polished marketing posters in raw SVG.
-Design a premium social media poster for Confiscore as a complete, self-contained SVG.
-
-{SVG_BRAND_BLOCK}
-
-THE POST THIS POSTER ACCOMPANIES (design the visual to match ITS message, tone, and key numbers):
-{primary[:600]}
-
-{f"BACKGROUND TOPIC (context only):{chr(10)}{context[:200]}" if context else ""}
-
-CANVAS: {W}x{H}px ({platform_str}). Set the root <svg> width="{W}" height="{H}" viewBox="0 0 {W} {H}".
-
-PICK A LAYOUT that best fits the post (vary it — do not always use the same one):
-  A) HERO STAT — one dominant number (110-160px) centered/left, 2-3 small supporting cards
-  B) SPLIT GRID — headline on the left half, a 2x2 stat-card grid on the right half
-  C) STACKED BANDS — 3-4 horizontal bands, each a stat with a label, accent rule between them
-  D) BIG STATEMENT — a bold 3-4 line headline as the focus, one stat strip along the bottom
-Choose the layout from the post's content: many numbers → B or C; one key number → A; a strong line → D.
-
-LAYOUT SAFETY (must hold for whichever layout you pick):
-- Define clear zones/cards with explicit x,y,width,height. NO element may cross into another zone or card.
-- Keep ≥ 40px outer margins and ≥ 30px gutters between cards.
-- Cards: rounded rect (rx=16), rgba fill, thin glowing accent border; big number in accent, SHORT label under it.
-- A soft radial glow blob (~18% opacity) behind the focal element, contained within its zone.
-- Brand footer: "Confiscore" bottom-left in white bold 24px; "confiscore.com" bottom-right in accent color.
-
-Before finishing, re-check every <text>: does it fit its zone/card width given chars * fontsize * 0.6? If not, shorten it or add a line break.
-
-OUTPUT: Raw SVG only. Start with <svg and end with </svg>. No markdown, no explanation."""
-
-
-def _build_carousel_prompt(req: AIPosterRequest) -> str:
-    primary = (req.post_text or req.description or "").strip()
-    context = req.description.strip() if (req.post_text and req.description) else ""
-    return f"""You are a world-class graphic designer who builds LinkedIn carousels in raw SVG.
-Design a premium multi-slide carousel for Confiscore as ONE complete, self-contained SVG with
-all slides stacked vertically.
-
-{SVG_BRAND_BLOCK}
-
-THE POST THIS CAROUSEL IS BASED ON (turn ITS message and numbers into slides):
-{primary[:700]}
-
-{f"BACKGROUND TOPIC (context only):{chr(10)}{context[:200]}" if context else ""}
-
-CAROUSEL STRUCTURE:
-- Each slide is exactly 1080x1080px (Instagram/LinkedIn square)
-- Decide the slide count from the content: 1 cover slide + one slide per key stat/point + 1 CTA slide
-  (typically 4-6 slides total)
-- Stack them vertically using <g transform="translate(0, N*1080)"> for slide index N
-- Root <svg>: width="1080" height="{{TOTAL}}" viewBox="0 0 1080 {{TOTAL}}" where TOTAL = slideCount * 1080
-
-SLIDE DESIGN:
-- COVER slide: brand eyebrow label, a bold 2-line headline (90-116px), a one-line subtext,
-  a short "Swipe to see the numbers →" hint, decorative concentric circles
-- STAT slides: an eyebrow like "01 / TEAM CONFIDENCE", a giant number (260-280px) in accent green,
-  a bold white stat label, one line of grey context, a small "confiscore.com" badge
-- For a before→after stat, show both numbers with an arrow (e.g. 550 → 700+), the lower one muted
-- CTA slide (last): the closing stat or message + a filled accent button "Try Confiscore today →"
-- Every slide: navy background, the 8px left accent bar, consistent 72px left margin
-
-Replace {{TOTAL}} with the real computed pixel height. Use the EXACT numbers from the content.
-
-OUTPUT: Raw SVG only. Start with <svg and end with </svg>. No markdown, no explanation."""
+# Poster prompts + PLATFORM_DIMS now live in poster_prompts.py (imported above).
 
 
 @app.post("/api/poster/ai")
@@ -1107,11 +1132,11 @@ async def ai_poster(req: AIPosterRequest):
     is_carousel = req.format == "carousel" and req.platform == "li"
 
     if is_carousel:
-        prompt = _build_carousel_prompt(req)
+        prompt = build_carousel_prompt(req)
         max_tokens = 16000
     else:
         W, H, platform_str = PLATFORM_DIMS.get(req.platform, PLATFORM_DIMS["li"])
-        prompt = _build_single_prompt(req, W, H, platform_str)
+        prompt = build_single_prompt(req, W, H, platform_str)
         max_tokens = 8000
 
     try:

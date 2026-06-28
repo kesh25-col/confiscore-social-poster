@@ -452,6 +452,7 @@ export default function App() {
                         setImagePath={setImagePath}
                         showToast={showToast}
                         description={description}
+                        voice={selectedVersion}
                       />
                     )}
                   </>
