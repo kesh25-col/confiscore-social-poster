@@ -71,7 +71,10 @@ export default function App() {
     const params = new URLSearchParams(window.location.search)
     const connected = params.get('connected')
     if (connected) {
-      showToast(`${connected} connected successfully!`, 'success')
+      // May be comma-separated e.g. "facebook,instagram"
+      const platforms = connected.split(',')
+      const label = platforms.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' & ')
+      showToast(`${label} connected successfully!`, 'success')
       window.history.replaceState({}, '', window.location.pathname)
       loadConnections()
     }
@@ -208,11 +211,17 @@ export default function App() {
       return
     }
 
-    // Save draft first if not saved
+    // Instagram requires an image
+    if (platform === 'ig' && !imagePath) {
+      showToast('Instagram requires an image — please add one before posting', 'error')
+      return
+    }
+
+    // Save or sync draft so DB always has the latest imagePath + selectedVersion
     let draftId = savedDraftId
-    if (!draftId) {
-      setSaving(true)
-      try {
+    setSaving(true)
+    try {
+      if (!draftId) {
         const { data } = await axios.post(`${API}/drafts`, {
           description, platforms, versions,
           selected_version: selectedVersion,
@@ -220,13 +229,19 @@ export default function App() {
         })
         draftId = data.id
         setSavedDraftId(draftId)
-      } catch (e) {
-        showToast('Failed to save draft before posting', 'error')
-        setSaving(false)
-        return
+      } else {
+        // Push any image or voice changes made after the draft was first saved
+        await axios.patch(`${API}/drafts/${draftId}`, {
+          selected_version: selectedVersion,
+          ...(imagePath ? { image_path: imagePath } : {})
+        })
       }
+    } catch (e) {
+      showToast('Failed to save draft before posting', 'error')
       setSaving(false)
+      return
     }
+    setSaving(false)
 
     setPosting(true)
     try {
@@ -452,6 +467,7 @@ export default function App() {
                         setImagePath={setImagePath}
                         showToast={showToast}
                         description={description}
+                        voiceKey={selectedVersion}
                       />
                     )}
                   </>
