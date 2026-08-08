@@ -10,8 +10,13 @@ import Calendar from './components/Calendar'
 import Settings from './components/Settings'
 import Login from './components/Login'
 import Toast from './components/Toast'
+import { fmtTokens } from './utils'
 
 const API = '/api'
+
+// A per-post composition id: all generate/research/poster calls for the post being
+// worked on share it, so regenerations accumulate into the same "this post" total.
+const newSid = () => `cs-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
 export default function App() {
   const [view, setView] = useState('compose') // compose | calendar | drafts | settings
@@ -33,6 +38,11 @@ export default function App() {
   const [saving, setSaving] = useState(false)
   const [posting, setPosting] = useState(false)
   const [savedDraftId, setSavedDraftId] = useState(null)
+  // Token usage tracking
+  const [sessionId, setSessionId] = useState(() => newSid())
+  const [sessionDesc, setSessionDesc] = useState('')
+  const [usage, setUsage] = useState(null)        // all-time
+  const [postUsage, setPostUsage] = useState(null) // current post
 
   // Decide whether a login gate is needed, then load data
   useEffect(() => {
@@ -68,6 +78,7 @@ export default function App() {
   const initData = () => {
     loadConnections()
     loadDrafts()
+    refreshUsage()
     const params = new URLSearchParams(window.location.search)
     const connected = params.get('connected')
     if (connected) {
@@ -96,6 +107,15 @@ export default function App() {
     } catch (e) { console.error(e) }
   }
 
+  const refreshUsage = useCallback(async () => {
+    try { const { data } = await axios.get(`${API}/usage`); setUsage(data) } catch (e) { /* noop */ }
+  }, [])
+
+  const refreshPostUsage = useCallback(async (sid) => {
+    if (!sid) return
+    try { const { data } = await axios.get(`${API}/usage/post/${sid}`); setPostUsage(data) } catch (e) { /* noop */ }
+  }, [])
+
   const showToast = useCallback((message, type = 'info') => {
     const id = Date.now()
     setToasts(prev => [...prev, { id, message, type }])
@@ -105,6 +125,16 @@ export default function App() {
   const handleGenerate = async () => {
     if (!description.trim()) { showToast('Enter a description first', 'error'); return }
     if (!platforms.length) { showToast('Select at least one platform', 'error'); return }
+
+    // Keep the same post session when regenerating the same idea; start a new one
+    // for a genuinely different description so per-post usage stays meaningful.
+    let sid = sessionId
+    if (description.trim() !== sessionDesc) {
+      sid = newSid()
+      setSessionId(sid)
+      setSessionDesc(description.trim())
+      setPostUsage(null)
+    }
 
     setGenerating(true)
     setVersions(null)
@@ -120,12 +150,15 @@ export default function App() {
     try {
       const { data } = await axios.post(`${API}/generate`, {
         description: description.trim(),
-        platforms
+        platforms,
+        session_id: sid
       })
       setVersions(data.versions)
       setSelectedVersion(Object.keys(data.versions)[0])
       setPreviewPlatform(platforms[0])
       showToast(data.search_used ? '✓ Generated with real-time web data' : '✓ Generated successfully', 'success')
+      refreshUsage()
+      refreshPostUsage(sid)
     } catch (e) {
       showToast(e.response?.data?.detail || 'Generation failed', 'error')
     } finally {
@@ -248,6 +281,11 @@ export default function App() {
   }
 
   const handleOpenDraft = (draft) => {
+    // New editing session for this post — its per-post counter starts fresh.
+    const sid = newSid()
+    setSessionId(sid)
+    setSessionDesc(draft.description || '')
+    setPostUsage(null)
     setDescription(draft.description)
     setPlatforms(draft.platforms || ['li'])
     setVersions(draft.versions)
@@ -303,6 +341,15 @@ export default function App() {
           </div>
         </div>
         <div className="topbar-right">
+          <button
+            className="usage-badge"
+            onClick={() => setView('settings')}
+            title="API tokens used (all time, never resets) · click for details"
+          >
+            <span className="usage-badge-dot">⚡</span>
+            {fmtTokens(usage?.lifetime?.total_tokens)} tok
+            <span className="usage-badge-cost">~${(usage?.lifetime?.est_cost_usd ?? 0).toFixed(2)}</span>
+          </button>
           <nav className="topbar-nav">
             <button
               className={`nav-btn ${view === 'compose' ? 'active' : ''}`}
@@ -357,6 +404,8 @@ export default function App() {
                 generating={generating}
                 generationStep={generationStep}
                 showToast={showToast}
+                sessionId={sessionId}
+                onUsage={() => { refreshUsage(); refreshPostUsage(sessionId) }}
               />
               <div style={{ padding: '0 1.25rem' }}>
                 <div className="divider" />
@@ -414,6 +463,11 @@ export default function App() {
                   {versions ? '4 Versions' : 'Preview'}
                   {versions && <span className="tab-count">4</span>}
                 </div>
+                {postUsage && postUsage.total_tokens > 0 && (
+                  <span className="post-usage-chip" title="Tokens used generating this post (accumulates as you regenerate)">
+                    ⚡ This post: {fmtTokens(postUsage.total_tokens)} tok · ~${postUsage.est_cost_usd.toFixed(3)} · {postUsage.calls} gen
+                  </span>
+                )}
               </div>
 
               <div className="tab-content">
@@ -453,6 +507,8 @@ export default function App() {
                         showToast={showToast}
                         description={description}
                         voice={selectedVersion}
+                        sessionId={sessionId}
+                        onUsage={() => { refreshUsage(); refreshPostUsage(sessionId) }}
                       />
                     )}
                   </>
@@ -533,6 +589,8 @@ export default function App() {
               connections={connections}
               onConnect={loadConnections}
               showToast={showToast}
+              usage={usage}
+              onRefreshUsage={refreshUsage}
             />
           </div>
         ) : (

@@ -34,10 +34,10 @@ function LinkedInMock({ text, imageUrl, onImageClick }) {
     <div className="li-mock">
       <div className="li-mock-card">
         <div className="li-mock-header">
-          <div className="li-mock-avatar">DC</div>
+          <div className="li-mock-avatar">HC</div>
           <div>
-            <div className="li-mock-name">Dr. Debasis Chatterji</div>
-            <div className="li-mock-title">Founder & CEO @Confiscore · 3rd+</div>
+            <div className="li-mock-name">Himaan Chatterji</div>
+            <div className="li-mock-title">Co-Founder @Confiscore · 3rd+</div>
             <div className="li-mock-time">Just now · 🌐</div>
           </div>
         </div>
@@ -143,7 +143,7 @@ function InstagramMock({ text, imageUrl, onImageClick }) {
 export default function Preview({
   content, platforms, previewPlatform, setPreviewPlatform,
   imageUrl, setImageUrl, setImagePath, showToast,
-  description, voice
+  description, voice, sessionId, onUsage
 }) {
   const fileInputRef = useRef()
   const [aiUrl, setAiUrl] = useState(null)
@@ -188,8 +188,10 @@ export default function Preview({
         platform: previewPlatform,
         post_text: postText,   // the SELECTED voice drives the poster
         format: aiFormat,
-        voice: voice || 'brand'   // voice-guided layout (debasis|brand|data|inspiring)
+        voice: voice || 'brand',   // voice-guided layout (debasis|brand|data|inspiring)
+        session_id: sessionId
       })
+      onUsage?.()   // poster generation counts toward this post + all-time
       setAiUrl(data.image)
       setAiModel(data.model)
       setImageUrl(data.image)   // SVG renders crisply in the preview

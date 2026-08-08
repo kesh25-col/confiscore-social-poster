@@ -3,8 +3,8 @@
 # Run: uvicorn main:app --reload
 # ─────────────────────────────────────────────────────────────────────────────
 
-import os, json, re, sqlite3, base64, io, secrets, hashlib, time
-from datetime import datetime
+import os, json, re, sqlite3, base64, io, secrets, hashlib, time, random, asyncio
+from datetime import datetime, timezone
 from typing import Optional
 from contextlib import contextmanager
 from pathlib import Path
@@ -36,6 +36,9 @@ ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 SERPER_KEY    = os.environ.get("SERPER_API_KEY")
 LI_CLIENT_ID     = os.environ.get("LINKEDIN_CLIENT_ID", "")
 LI_CLIENT_SECRET = os.environ.get("LINKEDIN_CLIENT_SECRET", "")
+# LinkedIn's versioned Posts/Documents API needs a YYYYMM version header.
+# Bump this if LinkedIn ever rejects a carousel post with a version error.
+LI_API_VERSION   = os.environ.get("LINKEDIN_API_VERSION", "202606")
 IG_APP_ID        = os.environ.get("INSTAGRAM_APP_ID", "")
 IG_APP_SECRET    = os.environ.get("INSTAGRAM_APP_SECRET", "")
 FB_APP_ID        = os.environ.get("FACEBOOK_APP_ID", "")
@@ -102,11 +105,22 @@ def init_db():
             key   TEXT PRIMARY KEY,
             value TEXT
         );
+        CREATE TABLE IF NOT EXISTS token_usage (
+            scope         TEXT PRIMARY KEY,   -- 'ALL_TIME' or a per-post session id
+            input_tokens  INTEGER DEFAULT 0,
+            output_tokens INTEGER DEFAULT 0,
+            calls         INTEGER DEFAULT 0,
+            updated_at    TEXT
+        );
         """)
-        # Migration: add scheduled_for to existing DBs that predate it.
+        # Migration: add columns to existing DBs that predate them.
         cols = [r[1] for r in conn.execute("PRAGMA table_info(posts)").fetchall()]
         if "scheduled_for" not in cols:
             conn.execute("ALTER TABLE posts ADD COLUMN scheduled_for TEXT")
+        if "publish_attempts" not in cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN publish_attempts INTEGER DEFAULT 0")
+        if "last_error" not in cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN last_error TEXT")
         conn.commit()
 
 def get_setting(key: str) -> str:
@@ -118,6 +132,58 @@ def set_setting(key: str, value: str):
     with get_db() as conn:
         conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)", (key, value))
         conn.commit()
+
+# ── Token usage tracking ─────────────────────────────────────────────────────────
+# Default per-million-token prices (USD) for claude-sonnet-4-6. Override in settings.
+DEFAULT_PRICE_IN = 3.0
+DEFAULT_PRICE_OUT = 15.0
+
+def _bump_usage(conn, scope: str, inp: int, out: int):
+    conn.execute("""
+        INSERT INTO token_usage (scope, input_tokens, output_tokens, calls, updated_at)
+        VALUES (?,?,?,1,?)
+        ON CONFLICT(scope) DO UPDATE SET
+            input_tokens  = input_tokens  + excluded.input_tokens,
+            output_tokens = output_tokens + excluded.output_tokens,
+            calls         = calls + 1,
+            updated_at    = excluded.updated_at
+    """, (scope, inp, out, datetime.utcnow().isoformat()))
+
+def record_usage(inp: int, out: int, session: str = ""):
+    """Add a Claude call's token counts to:
+      - LIFETIME  : permanent all-time total, never reset
+      - ALL_TIME  : current-period total, resettable via the Reset button
+      - post:<id> : the post being composed, so regenerations accumulate."""
+    inp, out = int(inp or 0), int(out or 0)
+    if inp == 0 and out == 0:
+        return
+    with get_db() as conn:
+        _bump_usage(conn, "LIFETIME", inp, out)
+        _bump_usage(conn, "ALL_TIME", inp, out)
+        if session:
+            _bump_usage(conn, f"post:{session}", inp, out)
+        conn.commit()
+
+def get_usage(scope: str) -> dict:
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT input_tokens, output_tokens, calls, updated_at FROM token_usage WHERE scope=?",
+            (scope,)).fetchone()
+    inp = row["input_tokens"] if row else 0
+    out = row["output_tokens"] if row else 0
+    calls = row["calls"] if row else 0
+    try:
+        price_in = float(get_setting("PRICE_IN") or DEFAULT_PRICE_IN)
+        price_out = float(get_setting("PRICE_OUT") or DEFAULT_PRICE_OUT)
+    except ValueError:
+        price_in, price_out = DEFAULT_PRICE_IN, DEFAULT_PRICE_OUT
+    cost = (inp / 1_000_000) * price_in + (out / 1_000_000) * price_out
+    return {
+        "input_tokens": inp, "output_tokens": out, "total_tokens": inp + out,
+        "calls": calls, "est_cost_usd": round(cost, 4),
+        "price_in": price_in, "price_out": price_out,
+        "updated_at": row["updated_at"] if row else None,
+    }
 
 init_db()
 
@@ -183,6 +249,7 @@ async def login(req: LoginRequest):
 class GenerateRequest(BaseModel):
     description: str
     platforms: list[str]
+    session_id: Optional[str] = None   # per-post usage grouping (accumulates on regenerate)
 
 class SaveDraftRequest(BaseModel):
     description: str
@@ -266,7 +333,7 @@ def competitor_research(topic: str) -> str:
 
 # ── Claude text helper ─────────────────────────────────────────────────────────
 def claude_complete(prompt: str, json_mode: bool = False, temperature: float = 1.0,
-                    max_tokens: int = 1500) -> str:
+                    max_tokens: int = 1500, session: str = "") -> str:
     user_content = prompt
     if json_mode:
         user_content += "\n\nRespond with ONLY the raw JSON object — no markdown fences, no preamble, no explanation."
@@ -280,6 +347,7 @@ def claude_complete(prompt: str, json_mode: bool = False, temperature: float = 1
                 temperature=temperature,
                 messages=[{"role": "user", "content": user_content}],
             )
+            record_usage(resp.usage.input_tokens, resp.usage.output_tokens, session)
             return resp.content[0].text
         except anthropic.APIStatusError as e:
             last_err = e
@@ -309,7 +377,7 @@ def svg_to_data_url(svg_text: str) -> str:
     return f"data:image/svg+xml;base64,{b64}"
 
 # ── Stage 1: Engineer prompt ───────────────────────────────────────────────────
-def engineer_prompt(description: str, platforms: list[str], search_results: str) -> str:
+def engineer_prompt(description: str, platforms: list[str], search_results: str, session: str = "") -> str:
     facts = get_facts()
     platform_specs = []
     if "li" in platforms:
@@ -340,10 +408,10 @@ Write a structured brief covering:
 
 Be specific and actionable. This brief goes directly to a post writer."""
 
-    return claude_complete(prompt)
+    return claude_complete(prompt, session=session)
 
 # ── Stage 2: Write 4 versions ──────────────────────────────────────────────────
-def write_version(brief: str, platforms: list[str], voice_key: str, raw_description: str = "") -> dict:
+def write_version(brief: str, platforms: list[str], voice_key: str, raw_description: str = "", session: str = "") -> dict:
     guideline = get_guideline(voice_key)
     facts = get_facts()
     platform_keys = [p for p in ["li", "fb", "ig"] if p in platforms]
@@ -391,12 +459,12 @@ OUTPUT FORMAT
 Respond ONLY with a valid JSON object. No markdown. No preamble. Nothing else.
 {{ {keys_str} }}"""
 
-    raw = claude_complete(prompt, json_mode=True)
+    raw = claude_complete(prompt, json_mode=True, session=session)
     return parse_json_safe(raw)
 
 # ── Generate endpoint ──────────────────────────────────────────────────────────
 @app.post("/api/generate")
-async def generate(req: GenerateRequest):
+def generate(req: GenerateRequest):   # sync def → threadpool, keeps backend responsive
     if not req.description.strip():
         raise HTTPException(400, "Description cannot be empty")
     if not req.platforms:
@@ -406,13 +474,14 @@ async def generate(req: GenerateRequest):
     search_results = web_search(f"Confiscore confidence management HR {req.description[:80]}")
 
     # Stage 1: Engineer the prompt
-    brief = engineer_prompt(req.description, req.platforms, search_results)
+    sid = getattr(req, "session_id", "") or ""
+    brief = engineer_prompt(req.description, req.platforms, search_results, session=sid)
 
     # Stage 2: Write 4 versions in parallel
     versions = {}
     def write_one(voice_key):
         try:
-            result = write_version(brief, req.platforms, voice_key, raw_description=req.description)
+            result = write_version(brief, req.platforms, voice_key, raw_description=req.description, session=sid)
             return voice_key, result
         except Exception as e:
             print(f"Version {voice_key} failed: {e}")
@@ -436,22 +505,53 @@ async def generate(req: GenerateRequest):
     }
 
 # ── Research / auto-description ──────────────────────────────────────────────────
+# Confiscore measures CONFIDENCE across four distinct pillars — not just hiring.
+# Idea generation rotates across all of these so suggestions stay broad and on-brand.
+CONFISCORE_PILLARS = [
+    {
+        "name": "Employee & Leadership Confidence",
+        "search": "employee engagement leadership trust psychological safety measurement trends 2026",
+        "angle": "360-degree confidence from peers/managers/reports, engagement, psychological safety, "
+                 "leadership trust, reducing internal conflict, retention.",
+    },
+    {
+        "name": "Customer, Brand & Product Confidence",
+        "search": "customer trust brand confidence CX measurement beyond NPS CSAT trends 2026",
+        "angle": "how confident customers feel about a brand/product/service, predicting churn and loyalty, "
+                 "going beyond NPS/CSAT to measure trust.",
+    },
+    {
+        "name": "Recruitment & Hiring Confidence",
+        "search": "hiring confidence candidate assessment recruitment bias reference checks trends 2026",
+        "angle": "candidate confidence before offer, reference insight, first-90-days retention, "
+                 "cutting hiring bias and gut-feel.",
+    },
+    {
+        "name": "Professional & Client Confidence",
+        "search": "coaching client confidence patient trust professional services feedback trends 2026",
+        "angle": "solo pros (doctors, teachers, coaches, consultants) measuring client/student/patient "
+                 "confidence and tracking emotional confidence shifts over time.",
+    },
+]
+
 class ResearchRequest(BaseModel):
     mode: str                       # "seed" | "auto"
     seed: Optional[str] = None      # required for "seed" mode
     platforms: list[str] = ["li"]
+    session_id: Optional[str] = None
 
 @app.post("/api/research")
-async def research(req: ResearchRequest):
+def research(req: ResearchRequest):   # sync def → threadpool, keeps backend responsive
     site_context = get_confiscore_context()
     facts = get_facts()
+    sid = req.session_id or ""
 
     if req.mode == "seed":
         seed = (req.seed or "").strip()
         if not seed:
             raise HTTPException(400, "Provide a topic to research")
 
-        web = web_search(f"{seed} confidence hiring HR recruitment trends 2026")
+        web = web_search(f"{seed} confidence trust measurement trends 2026")
         comp = competitor_research(seed)
 
         prompt = f"""You are a B2B content strategist for Confiscore.
@@ -473,16 +573,26 @@ social content. Anchor it in Confiscore's real positioning, weave in a specific 
 from the research, and stake out a position that stands apart from the competitors above.
 Output ONLY the description text — no headings, no preamble."""
 
-        description = claude_complete(prompt, temperature=0.9, max_tokens=600).strip()
+        description = claude_complete(prompt, temperature=0.9, max_tokens=600, session=sid).strip()
         return {
             "description": description,
             "web_used": bool(web),
             "competitors_used": bool(comp),
         }
 
-    # mode == "auto" — suggest several ready-to-use post ideas
-    web = web_search("HR confidence hiring recruitment trends statistics 2026")
-    comp = competitor_research("confidence measurement hiring assessment")
+    # mode == "auto" — suggest several ready-to-use post ideas spanning ALL of
+    # Confiscore's use cases (not just hiring). Research each pillar so ideas stay broad.
+    # Rotate which pillar leads each time so repeated clicks don't repeat themselves.
+    pillars = random.sample(CONFISCORE_PILLARS, len(CONFISCORE_PILLARS))
+    research_blocks = []
+    for p in pillars:
+        snippets = web_search(p["search"])
+        if snippets:
+            research_blocks.append(f"[{p['name']}]\n{snippets}")
+    web = "\n\n".join(research_blocks)
+    comp = competitor_research("confidence trust feedback measurement")
+
+    pillar_menu = "\n".join(f"- {p['name']}: {p['angle']}" for p in CONFISCORE_PILLARS)
 
     prompt = f"""You are a B2B content strategist for Confiscore.
 
@@ -491,18 +601,24 @@ Output ONLY the description text — no headings, no preamble."""
 CONFISCORE WEBSITE CONTENT:
 {site_context[:1500]}
 
-LIVE WEB RESEARCH (trends & data):
+CONFISCORE MEASURES CONFIDENCE ACROSS FOUR PILLARS — cover the FULL range, do NOT default to hiring:
+{pillar_menu}
+
+LIVE WEB RESEARCH (trends & data, grouped by pillar):
 {web or "(no web results)"}
 
 {f'COMPETITOR ACTIVITY (differentiate from these):{chr(10)}{comp}' if comp else ''}
 
-TASK: Propose 5 distinct, timely social post ideas for Confiscore. Each must be grounded in the
-research/site above and offer a fresh angle competitors are NOT covering.
+TASK: Propose 5 distinct, timely social post ideas for Confiscore.
+HARD REQUIREMENT: the 5 ideas must span DIFFERENT pillars above — at most ONE may be about
+hiring/recruitment. Include at least one employee/leadership idea and at least one customer/brand idea.
+Each idea must be grounded in the research/site above and offer a fresh angle competitors are NOT covering.
+In each idea, name the pillar it belongs to.
 
 Respond as a JSON object:
-{{"ideas": [{{"title": "short punchy title", "description": "3-4 sentence post brief with a specific angle and data point"}}]}}"""
+{{"ideas": [{{"title": "short punchy title", "pillar": "which of the four pillars", "description": "3-4 sentence post brief with a specific angle and data point"}}]}}"""
 
-    raw = claude_complete(prompt, json_mode=True, temperature=0.95, max_tokens=1800)
+    raw = claude_complete(prompt, json_mode=True, temperature=0.95, max_tokens=2200, session=sid)
     data = parse_json_safe(raw)
     return {
         "ideas": data.get("ideas", []),
@@ -789,6 +905,86 @@ async def disconnect(platform: str):
         conn.commit()
     return {"disconnected": platform}
 
+# ── LinkedIn carousel helpers ──────────────────────────────────────────────────
+def _is_carousel_image(image_file: Path) -> bool:
+    """A carousel poster is one tall PNG of stacked square slides (1080 × N·1080).
+    Single posters are 1:1 or 4:5 (ratio ≤ 1.25), so a tall ratio means carousel."""
+    try:
+        from PIL import Image
+        with Image.open(image_file) as img:
+            w, h = img.size
+        return h >= w * 1.8
+    except Exception:
+        return False
+
+def _slice_png_to_pdf(image_file: Path) -> bytes:
+    """Slice the tall stacked-slides PNG into square pages and build a multi-page PDF
+    (LinkedIn native carousels are document/PDF posts)."""
+    from PIL import Image
+    img = Image.open(image_file).convert("RGB")
+    w, h = img.size
+    n = max(1, round(h / w))              # slides are square, so page height == width
+    pages = []
+    for i in range(n):
+        top = i * w
+        pages.append(img.crop((0, top, w, min(top + w, h))))
+    buf = io.BytesIO()
+    pages[0].save(buf, format="PDF", save_all=True, append_images=pages[1:], resolution=96)
+    return buf.getvalue()
+
+def _li_escape_commentary(text: str) -> str:
+    """LinkedIn's versioned Posts API 'commentary' uses a little-text format where these
+    reserved characters must be backslash-escaped or the post is rejected (HTTP 422)."""
+    if not text:
+        return ""
+    reserved = set("\\|{}@[]()<>#*_~")
+    return "".join("\\" + ch if ch in reserved else ch for ch in text)
+
+async def _post_linkedin_carousel(client, text, image_file, access_token, author):
+    """Publish a native LinkedIn carousel by uploading a PDF via the Documents API."""
+    pdf_bytes = _slice_png_to_pdf(image_file)
+    v_headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "X-Restli-Protocol-Version": "2.0.0",
+        "LinkedIn-Version": LI_API_VERSION,
+    }
+    # 1. Initialize the document upload
+    init = await client.post(
+        "https://api.linkedin.com/rest/documents?action=initializeUpload",
+        headers=v_headers,
+        json={"initializeUploadRequest": {"owner": author}},
+    )
+    if init.status_code not in (200, 201):
+        raise Exception(f"LinkedIn carousel init failed ({init.status_code}): {init.text}")
+    val = init.json()["value"]
+    upload_url, document_urn = val["uploadUrl"], val["document"]
+
+    # 2. Upload the PDF bytes
+    up = await client.put(upload_url, content=pdf_bytes,
+                          headers={"Authorization": f"Bearer {access_token}"})
+    if up.status_code not in (200, 201):
+        raise Exception(f"LinkedIn carousel upload failed ({up.status_code}): {up.text}")
+
+    # 3. Create the post referencing the uploaded document
+    post_body = {
+        "author": author,
+        "commentary": _li_escape_commentary(text),
+        "visibility": "PUBLIC",
+        "distribution": {
+            "feedDistribution": "MAIN_FEED",
+            "targetEntities": [],
+            "thirdPartyDistributionChannels": [],
+        },
+        "content": {"media": {"title": "Confiscore", "id": document_urn}},
+        "lifecycleState": "PUBLISHED",
+    }
+    resp = await client.post("https://api.linkedin.com/rest/posts",
+                             headers=v_headers, json=post_body)
+    if resp.status_code not in (200, 201):
+        raise Exception(f"LinkedIn carousel post failed ({resp.status_code}): {resp.text}")
+    return {"id": resp.headers.get("x-restli-id", ""), "format": "carousel"}
+
 # ── Post to LinkedIn ───────────────────────────────────────────────────────────
 async def post_to_linkedin(text: str, image_path: Optional[str], access_token: str, user_id: str):
     headers = {
@@ -798,7 +994,13 @@ async def post_to_linkedin(text: str, image_path: Optional[str], access_token: s
     }
     author = f"urn:li:person:{user_id}"
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=60) as client:
+        # A tall stacked-slides poster → publish as a native LinkedIn carousel (PDF document)
+        if image_path:
+            _cf = UPLOAD_DIR / image_path
+            if _cf.exists() and _is_carousel_image(_cf):
+                return await _post_linkedin_carousel(client, text, _cf, access_token, author)
+
         if image_path:
             image_file = UPLOAD_DIR / image_path
             if image_file.exists():
@@ -995,11 +1197,130 @@ async def post_now(req: PostNowRequest):
 
     return results
 
+# ── Auto-publish scheduler ─────────────────────────────────────────────────────
+# A background loop publishes scheduled posts when their time arrives — no manual
+# click needed. Runs every 60s in-process (single uvicorn worker).
+_CONN_NAME = {"li": "linkedin", "fb": "facebook", "ig": "instagram",
+              "linkedin": "linkedin", "facebook": "facebook", "instagram": "instagram"}
+_CONTENT_KEY = {"li": "li", "fb": "fb", "ig": "ig",
+                "linkedin": "li", "facebook": "fb", "instagram": "ig"}
+
+def _is_due(scheduled_for: str) -> bool:
+    """scheduled_for is ISO; UTC 'Z'/offset respected, naive values treated as UTC."""
+    if not scheduled_for:
+        return False
+    s = scheduled_for.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return False
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt <= datetime.utcnow()
+
+async def _auto_publish_post(post: dict, connections: dict):
+    try:
+        versions = json.loads(post["versions"])
+        platforms = json.loads(post["platforms"])
+    except Exception as e:
+        _finish_publish(post["id"], "failed", f"Bad draft data: {e}")
+        return
+
+    selected = versions.get(post.get("selected_version") or "", {})
+    if not selected or "content" not in selected:
+        _finish_publish(post["id"], "failed", "No selected version to publish")
+        return
+
+    errors, any_ok = [], False
+    for p in platforms:
+        cname = _CONN_NAME.get(p, p)
+        conn_data = connections.get(cname)
+        if not conn_data:
+            errors.append(f"{cname} not connected")
+            continue
+        text = selected["content"].get(_CONTENT_KEY.get(p, p), "")
+        try:
+            if cname == "linkedin":
+                await post_to_linkedin(text, post.get("image_path"), conn_data["access_token"], conn_data["user_id"])
+            elif cname == "facebook":
+                await post_to_facebook(text, post.get("image_path"), conn_data["access_token"], conn_data["user_id"])
+            elif cname == "instagram":
+                await post_to_instagram(text, post.get("image_path"), conn_data["access_token"], conn_data["user_id"])
+            else:
+                errors.append(f"unknown platform {cname}")
+                continue
+            any_ok = True
+        except Exception as e:
+            errors.append(f"{cname}: {e}")
+
+    if any_ok:
+        _finish_publish(post["id"], "published", "; ".join(errors) or None)
+        print(f"[scheduler] auto-published post {post['id']}" + (f" (partial: {errors})" if errors else ""))
+    else:
+        attempts = (post.get("publish_attempts") or 0) + 1
+        status = "failed" if attempts >= 5 else "scheduled"   # give up after 5 tries
+        with get_db() as conn:
+            conn.execute("UPDATE posts SET publish_attempts=?, last_error=?, status=? WHERE id=?",
+                         (attempts, "; ".join(errors)[:500], status, post["id"]))
+            conn.commit()
+        print(f"[scheduler] post {post['id']} publish failed (attempt {attempts}): {errors}")
+
+def _finish_publish(post_id: int, status: str, err):
+    with get_db() as conn:
+        conn.execute("UPDATE posts SET status=?, posted_at=?, last_error=? WHERE id=?",
+                     (status, datetime.utcnow().isoformat() if status == "published" else None,
+                      (err or "")[:500] or None, post_id))
+        conn.commit()
+
+async def _publish_due_scheduled():
+    with get_db() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM posts WHERE status='scheduled' AND scheduled_for IS NOT NULL AND scheduled_for != ''"
+        ).fetchall()]
+        connections = {r["platform"]: dict(r) for r in conn.execute("SELECT * FROM connections").fetchall()}
+    for post in rows:
+        if _is_due(post.get("scheduled_for")):
+            await _auto_publish_post(post, connections)
+
+async def _auto_publish_loop():
+    await asyncio.sleep(8)   # let startup settle
+    print("[scheduler] auto-publish loop started (checks every 60s)")
+    while True:
+        try:
+            await _publish_due_scheduled()
+        except Exception as e:
+            print(f"[scheduler] loop error: {e}")
+        await asyncio.sleep(60)
+
+@app.on_event("startup")
+async def _start_scheduler():
+    asyncio.create_task(_auto_publish_loop())
+
+@app.get("/api/scheduler/status")
+def scheduler_status():
+    with get_db() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT id, scheduled_for, status, publish_attempts, last_error FROM posts "
+            "WHERE scheduled_for IS NOT NULL AND scheduled_for != '' ORDER BY scheduled_for"
+        ).fetchall()]
+    upcoming = [r for r in rows if r["status"] == "scheduled"]
+    return {
+        "running": True,
+        "checks_every_seconds": 60,
+        "scheduled_count": len(upcoming),
+        "failed_count": sum(1 for r in rows if r["status"] == "failed"),
+        "next_due": upcoming[0]["scheduled_for"] if upcoming else None,
+        "items": rows,
+    }
+
 # ── Diagram generation (Claude → SVG → PNG) ───────────────────────────────────
 class DiagramRequest(BaseModel):
     description: str
     post_text: str
     platform: str = "li"
+    session_id: Optional[str] = None
 
 @app.post("/api/poster/diagram")
 async def generate_diagram(req: DiagramRequest):
@@ -1039,6 +1360,7 @@ OUTPUT: Raw SVG only. No markdown fences. No explanation. Must start with <svg a
             temperature=0.7,
             messages=[{"role": "user", "content": prompt}],
         )
+        record_usage(resp.usage.input_tokens, resp.usage.output_tokens, req.session_id or "")
         svg_text = extract_svg(resp.content[0].text)
         if not svg_text:
             raise HTTPException(500, f"Claude returned no SVG: {resp.content[0].text[:120]}")
@@ -1122,33 +1444,42 @@ class AIPosterRequest(BaseModel):
     post_text: Optional[str] = None
     format: str = "single"   # "single" | "carousel"
     voice: str = "brand"     # debasis | brand | data | inspiring
+    session_id: Optional[str] = None   # per-post usage grouping
 
 # Poster prompts + PLATFORM_DIMS now live in poster_prompts.py (imported above).
 
 
 @app.post("/api/poster/ai")
-async def ai_poster(req: AIPosterRequest):
+def ai_poster(req: AIPosterRequest):   # sync def → runs in threadpool, never blocks the event loop
     # Carousel is LinkedIn-only; Instagram always gets a single poster.
     is_carousel = req.format == "carousel" and req.platform == "li"
 
     if is_carousel:
         prompt = build_carousel_prompt(req)
-        max_tokens = 16000
+        max_tokens = 40000   # enough for 6-slide carousels without truncating
     else:
         W, H, platform_str = PLATFORM_DIMS.get(req.platform, PLATFORM_DIMS["li"])
         prompt = build_single_prompt(req, W, H, platform_str)
-        max_tokens = 8000
+        max_tokens = 16000
 
     try:
-        resp = claude.messages.create(
+        # Stream the response: high token budgets (esp. carousels at 28k) exceed the
+        # SDK's non-streaming limit, so streaming is required to build big posters.
+        parts = []
+        with claude.messages.stream(
             model=CLAUDE_MODEL,
             max_tokens=max_tokens,
             temperature=0.8,
             messages=[{"role": "user", "content": prompt}],
-        )
-        svg_text = extract_svg(resp.content[0].text)
+        ) as stream:
+            for chunk in stream.text_stream:
+                parts.append(chunk)
+            final = stream.get_final_message()
+        record_usage(final.usage.input_tokens, final.usage.output_tokens, req.session_id or "")
+        raw_text = "".join(parts)
+        svg_text = extract_svg(raw_text)
         if not svg_text:
-            raise HTTPException(500, f"Claude returned no SVG: {resp.content[0].text[:120]}")
+            raise HTTPException(500, f"Claude returned no SVG: {raw_text[:120]}")
 
         return {
             "image": svg_to_data_url(svg_text),
@@ -1161,6 +1492,31 @@ async def ai_poster(req: AIPosterRequest):
         raise
     except Exception as e:
         raise HTTPException(500, f"AI poster generation failed: {e}")
+
+
+# ── Token usage endpoints ──────────────────────────────────────────────────────
+@app.get("/api/usage")
+def usage_all_time():
+    """Token usage + estimated cost. `lifetime` never resets; the top-level fields are
+    the current (resettable) period shown in the badge & Settings."""
+    data = get_usage("ALL_TIME")
+    data["lifetime"] = get_usage("LIFETIME")
+    return data
+
+@app.get("/api/usage/post/{session_id}")
+def usage_for_post(session_id: str):
+    """Accumulated usage for the post currently being composed (grows on each regenerate)."""
+    return get_usage(f"post:{session_id}")
+
+@app.post("/api/usage/reset")
+def usage_reset():
+    """Zero the current-period counter only. LIFETIME (all-time) is preserved."""
+    with get_db() as conn:
+        conn.execute("DELETE FROM token_usage WHERE scope='ALL_TIME'")
+        conn.commit()
+    data = get_usage("ALL_TIME")
+    data["lifetime"] = get_usage("LIFETIME")
+    return data
 
 
 @app.get("/api/status")

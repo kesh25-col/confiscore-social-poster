@@ -11,7 +11,7 @@ export default function Composer({
   description, setDescription,
   platforms, setPlatforms,
   onGenerate, generating, generationStep,
-  showToast
+  showToast, sessionId, onUsage
 }) {
   const [mode, setMode] = useState('write')   // 'write' | 'research'
   const [seed, setSeed] = useState('')
@@ -31,8 +31,9 @@ export default function Composer({
     setIdeas([])
     try {
       const { data } = await axios.post('/api/research', {
-        mode: 'seed', seed: seed.trim(), platforms
+        mode: 'seed', seed: seed.trim(), platforms, session_id: sessionId
       })
+      onUsage?.()
       setDescription(data.description)
       const src = [data.web_used && 'web', data.competitors_used && 'competitors']
         .filter(Boolean).join(' + ')
@@ -50,8 +51,9 @@ export default function Composer({
     setIdeas([])
     try {
       const { data } = await axios.post('/api/research', {
-        mode: 'auto', platforms
+        mode: 'auto', platforms, session_id: sessionId
       })
+      onUsage?.()
       setIdeas(data.ideas || [])
       if (!data.ideas?.length) showToast('No ideas returned — try again', 'error')
     } catch (e) {
@@ -130,6 +132,7 @@ export default function Composer({
               <div className="idea-list">
                 {ideas.map((idea, i) => (
                   <div key={i} className="idea-card" onClick={() => pickIdea(idea)}>
+                    {idea.pillar && <div className="idea-pillar">{idea.pillar}</div>}
                     <div className="idea-title">{idea.title}</div>
                     <div className="idea-desc">{idea.description}</div>
                   </div>
