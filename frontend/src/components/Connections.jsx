@@ -25,6 +25,7 @@ const PLATFORMS = [
     secretLabel: 'App Secret',
     helpUrl: 'https://developers.facebook.com/apps',
     hint: 'Create a Meta App → Add "Facebook Login for Business" → add redirect: http://localhost:8000/api/auth/facebook/callback',
+    comingSoon: true,   // demo: show as "coming soon" until Meta credentials exist — set false to enable
   },
   {
     key: 'instagram',
@@ -39,6 +40,7 @@ const PLATFORMS = [
     helpUrl: 'https://developers.facebook.com/apps',
     hint: 'Same Meta App as Facebook — connect Facebook first, Instagram links automatically if your IG account is a Business/Creator account linked to the Page.',
     linkedTo: 'facebook',  // signals it's auto-connected via Facebook OAuth
+    comingSoon: true,   // demo: show as "coming soon" until Meta credentials exist — set false to enable
   },
 ]
 
@@ -200,6 +202,7 @@ export default function Connections({ connections, onConnect, compact = false })
   const [imgbbKey, setImgbbKey] = useState('')
   const [savingImgbb, setSavingImgbb] = useState(false)
   const [showImgbb, setShowImgbb] = useState(false)
+  const igComingSoon = PLATFORMS.find(p => p.key === 'instagram')?.comingSoon
 
   useEffect(() => {
     axios.get('/api/settings/status')
@@ -222,6 +225,7 @@ export default function Connections({ connections, onConnect, compact = false })
   }
 
   const handleConnect = (platform) => {
+    if (platform.comingSoon) return   // demo: not connectable until credentials are wired up
     // Instagram is linked automatically through Facebook OAuth
     if (platform.linkedTo) {
       const parentPlatform = PLATFORMS.find(p => p.key === platform.linkedTo)
@@ -274,6 +278,35 @@ export default function Connections({ connections, onConnect, compact = false })
         <div style={{ display: 'flex', gap: 6 }}>
           {PLATFORMS.map(p => {
             const connected = connections[p.key]
+            if (p.comingSoon) {
+              return (
+                <span
+                  key={p.key}
+                  title={`${p.label} — coming soon`}
+                  style={{
+                    fontSize: 12.5, fontWeight: 600,
+                    padding: '6px 12px', borderRadius: 999,
+                    border: '1px dashed var(--border2)', background: 'var(--bg2)',
+                    color: 'var(--white-muted)', cursor: 'default',
+                    display: 'flex', alignItems: 'center', gap: 5,
+                    fontFamily: 'var(--font-body)', opacity: 0.7,
+                  }}
+                >
+                  <span style={{
+                    width: 14, height: 14, borderRadius: 3,
+                    background: p.gradient || p.color,
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 8, color: 'white', fontWeight: 800,
+                  }}>
+                    {p.shortLabel[0]}
+                  </span>
+                  {p.label}
+                  <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    soon
+                  </span>
+                </span>
+              )
+            }
             return (
               <button
                 key={p.key}
@@ -344,13 +377,15 @@ export default function Connections({ connections, onConnect, compact = false })
             <div className="conn-info" style={{ flex: 1 }}>
               <div className="conn-platform">{p.label}</div>
               <div className={`conn-status ${connected ? 'connected' : ''}`}>
-                {connected
-                  ? `✓ Connected as ${connected.username || 'account'}`
-                  : isAutoLinked
-                    ? 'Links automatically via Facebook — connect Facebook to enable'
-                    : hasCredentials
-                      ? 'Credentials saved — ready to connect'
-                      : 'No credentials configured'
+                {p.comingSoon
+                  ? 'Coming soon'
+                  : connected
+                    ? `✓ Connected as ${connected.username || 'account'}`
+                    : isAutoLinked
+                      ? 'Links automatically via Facebook — connect Facebook to enable'
+                      : hasCredentials
+                        ? 'Credentials saved — ready to connect'
+                        : 'No credentials configured'
                 }
               </div>
               {p.key === 'instagram' && connected && (
@@ -361,7 +396,15 @@ export default function Connections({ connections, onConnect, compact = false })
             </div>
 
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              {connected ? (
+              {p.comingSoon ? (
+                <span style={{
+                  fontSize: 11, fontWeight: 700, padding: '6px 13px', borderRadius: 999,
+                  border: '1px dashed var(--border2)', color: 'var(--white-muted)',
+                  textTransform: 'uppercase', letterSpacing: '0.05em',
+                }}>
+                  Coming soon
+                </span>
+              ) : connected ? (
                 <button className="btn btn-danger" onClick={() => handleDisconnect(p.key)}>
                   Disconnect
                 </button>
@@ -392,6 +435,7 @@ export default function Connections({ connections, onConnect, compact = false })
       })}
 
       {/* imgbb API key for Instagram image hosting */}
+      {!igComingSoon && (
       <div style={{
         marginTop: 16, padding: '12px 14px',
         background: 'var(--bg3)',
@@ -436,6 +480,7 @@ export default function Connections({ connections, onConnect, compact = false })
           </div>
         )}
       </div>
+      )}
 
       <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12, lineHeight: 1.6 }}>
         🔒 OAuth 2.0 — your password never touches this app. Credentials are stored in a local SQLite database only.
