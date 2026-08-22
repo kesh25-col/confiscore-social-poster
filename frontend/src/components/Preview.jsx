@@ -183,37 +183,24 @@ export default function Preview({
     if (!postText) { showToast('Select a version first', 'error'); return }
     setAiLoading(true)
     try {
-      const { data } = await axios.post('/api/poster/ai', {
+      // Template engine: Claude writes the copy, the server renders the polished
+      // Confiscore template to a ready PNG (path + data URL) — no client rasterization.
+      const { data } = await axios.post('/api/poster/template', {
         description,
-        platform: previewPlatform,
-        post_text: postText,   // the SELECTED voice drives the poster
+        post_text: postText,       // the SELECTED voice drives the poster copy
         format: aiFormat,
-        voice: voice || 'brand',   // voice-guided layout (debasis|brand|data|inspiring)
+        voice: voice || 'brand',   // debasis | brand | data | inspiring
         session_id: sessionId
       })
-      onUsage?.()   // poster generation counts toward this post + all-time
-      setAiUrl(data.image)
-      setAiModel(data.model)
-      setImageUrl(data.image)   // SVG renders crisply in the preview
-
-      // Rasterize the SVG to a PNG and upload it, so it can be posted (LinkedIn needs raster).
-      try {
-        const pngBlob = await rasterizeSvgToPng(data.image)
-        const fd = new FormData()
-        fd.append('file', pngBlob, 'poster.png')
-        const up = await axios.post('/api/upload-image', fd)
-        setAiImagePath(up.data.path)
-        setImagePath(up.data.path)
-      } catch (convErr) {
-        console.error('Poster rasterization failed:', convErr)
-        setAiImagePath(null)
-        setImagePath(null)
-        showToast('Poster ready, but image could not be prepared for posting', 'error')
-      }
-
-      showToast(aiFormat === 'carousel' ? '✦ Carousel ready' : '✦ AI poster ready', 'success')
+      onUsage?.()   // generation counts toward this post + all-time
+      setAiUrl(data.url)
+      setAiModel('template')
+      setImageUrl(data.url)
+      setAiImagePath(data.path)
+      setImagePath(data.path)
+      showToast(aiFormat === 'carousel' ? '✦ Carousel ready' : '✦ Poster ready', 'success')
     } catch (e) {
-      showToast(e.response?.data?.detail || 'AI generation failed', 'error')
+      showToast(e.response?.data?.detail || 'Image generation failed', 'error')
     } finally {
       setAiLoading(false)
     }
@@ -255,7 +242,7 @@ const text = content?.[previewPlatform] || content?.[platforms[0]] || ''
         <div className="poster-header">
           <span className="poster-title">AI Image Generation</span>
           <span style={{ fontSize: 11, color: 'var(--white-muted)', fontFamily: 'var(--font-body)' }}>
-            Claude · SVG
+            Claude · Confiscore template
           </span>
         </div>
 
@@ -326,13 +313,13 @@ const text = content?.[previewPlatform] || content?.[platforms[0]] || ''
               <rect x="3" y="3" width="18" height="18" rx="2"/>
               <path d="M3 9h18M9 21V9"/>
             </svg>
-            <span>Claude designs a real poster or carousel in SVG from your content</span>
+            <span>Claude writes the copy; Confiscore renders a polished poster or carousel</span>
           </div>
         )}
         {aiUrl && !aiLoading && (
           <div className="poster-img-wrap">
             <div style={{ fontSize: 11, color: 'var(--white-muted)', marginBottom: 8, fontFamily: 'var(--font-body)' }}>
-              ✦ Claude SVG · {aiFormat === 'carousel' ? 'carousel (scroll to view slides)' : 'click image to use as post visual'}
+              ✦ Confiscore template · {aiFormat === 'carousel' ? 'carousel (scroll to view slides)' : 'click image to use as post visual'}
             </div>
             <img src={aiUrl} alt="AI generated visual" style={{ cursor: 'pointer', width: '100%' }}
               onClick={() => { setImageUrl(aiUrl); setImagePath(aiImagePath) }} />

@@ -28,6 +28,7 @@ except ImportError:
 
 from guidelines import get_guideline, get_all_guidelines, get_facts
 from poster_prompts import build_single_prompt, build_carousel_prompt, PLATFORM_DIMS
+import poster_template
 print("✓ Guidelines loaded")
 
 import anthropic
@@ -1492,6 +1493,121 @@ def ai_poster(req: AIPosterRequest):   # sync def → runs in threadpool, never 
         raise
     except Exception as e:
         raise HTTPException(500, f"AI poster generation failed: {e}")
+
+
+# ── Template poster (deterministic Pillow renderer — consistent quality) ────────
+# Claude writes only the SHORT text; poster_template.py owns the layout, so every
+# generation looks the same polished way. Fully server-side (no browser raster).
+class TemplatePosterRequest(BaseModel):
+    description: str = ""
+    post_text: Optional[str] = None
+    format: str = "single"          # "single" | "carousel"
+    voice: str = "brand"
+    session_id: Optional[str] = None
+
+def _extract_json(raw: str) -> str:
+    s = (raw or "").strip()
+    if s.startswith("```"):
+        s = s.split("```", 2)[1]
+        if s[:4].lower() == "json":
+            s = s[4:]
+    i, j = s.find("{"), s.rfind("}")
+    return s[i:j+1] if (i >= 0 and j > i) else s
+
+def _structure_prompt(post_text: str, voice: str, fmt: str) -> str:
+    if fmt == "carousel":
+        schema = ('{\n'
+                  '  "cover": {"label": "CONFISCORE · <TOPIC>", "headline": [["<line1>","white"],["<punch>","green"]], "sub": "<short subtitle>"},\n'
+                  '  "slides": [{"tag": "01 / <SHORT>", "hero": "<1-2 words>", "sub": "<one short line>", "card_head": "<green insight>", "card_sub": "<muted line>"}],\n'
+                  '  "cta": {"label": "THE FIX", "headline": [["<line1>","white"],["<punch>","green"]], "sub": "<one line>", "button": "confiscore.com"}\n'
+                  '}')
+        rules = ("- 4 or 5 slides. Each slide `hero` is a SHORT label (1-2 words, or a 'Day 30' style label) — never a sentence.\n"
+                 "- cover.headline: 2-3 lines, the LAST line color 'green', the rest 'white' (<=18 chars/line).\n"
+                 "- cta.headline: exactly 2 lines, last line 'green'.\n"
+                 "- slide `sub` <=8 words; `card_head` <=5 words; `card_sub` <=6 words.")
+    else:
+        schema = ('{\n'
+                  '  "label": "CONFISCORE · <TOPIC>",\n'
+                  '  "headline": [["<LINE1>","white"],["<LINE2>","white"],["<PUNCH>","green"]],\n'
+                  '  "sub": "<one short sentence>",\n'
+                  '  "cards": [["<label>","<value>"],["<label>","<value>"]],\n'
+                  '  "hero": "0–1000",\n'
+                  '  "cap": ["Confiscore – <what>","<one short line>"],\n'
+                  '  "take": "<punchy takeaway>",\n'
+                  '  "tags": ["#Tag","#Tag","#Tag"],\n'
+                  '  "url": "confiscore.com"\n'
+                  '}')
+        rules = ("- headline: EXACTLY 3 lines in UPPERCASE, the LAST line color 'green', the first two 'white' (<=14 chars/line).\n"
+                 "- `hero` should be '0–1000' (the Confiscore scale) unless the post centers on ONE specific number from the text.\n"
+                 "- cards: EXACTLY 2 — a contrast like 'what you see / what you miss' or 'before / after'. Labels & values <=3 words.\n"
+                 "- `take` <=6 words. Do NOT invent statistics.")
+    return (f"You are a senior brand designer writing the TEXT for a Confiscore social poster.\n"
+            f"Confiscore measures human confidence on a 0-1000 scale (hiring, teams, customers, professionals).\n"
+            f"Voice: {voice}. Turn the post below into SHORT, punchy poster copy.\n\n"
+            f"POST:\n{(post_text or '')[:900]}\n\n"
+            f"Return ONLY a JSON object with EXACTLY this shape:\n{schema}\n\n"
+            f"RULES:\n{rules}\nKeep every string short. No markdown, JSON only.")
+
+def _color(c):
+    return "green" if str(c).lower() == "green" else "white"
+
+def _coerce_single(s: dict) -> dict:
+    head = s.get("headline") or [["CONFIDENCE", "white"], ["IS THE", "white"], ["NEW KPI.", "green"]]
+    head = [[str(x[0]), _color(x[1] if len(x) > 1 else "white")] for x in head[:3]]
+    while len(head) < 3: head.append(["", "white"])
+    cards = [[str(c[0]), str(c[1])] for c in (s.get("cards") or [])[:2] if isinstance(c, (list, tuple)) and len(c) >= 2]
+    while len(cards) < 2: cards.append(["", ""])
+    return {"label": str(s.get("label", "CONFISCORE")), "headline": head, "sub": str(s.get("sub", "")),
+            "cards": cards, "hero": str(s.get("hero", "0–1000")),
+            "cap": [str(x) for x in (s.get("cap") or [])][:2], "take": str(s.get("take", "")),
+            "tags": [str(x) for x in (s.get("tags") or [])][:3], "url": str(s.get("url", "confiscore.com"))}
+
+def _coerce_headline(h, fallback):
+    h = h or fallback
+    return [[str(x[0]), _color(x[1] if len(x) > 1 else "white")] for x in h[:3]] or fallback
+
+def _coerce_carousel(s: dict) -> dict:
+    cov = s.get("cover") or {}
+    cta = s.get("cta") or {}
+    slides = []
+    for sl in (s.get("slides") or [])[:5]:
+        slides.append({"tag": str(sl.get("tag", "")), "hero": str(sl.get("hero", "")),
+                       "sub": str(sl.get("sub", "")), "card_head": str(sl.get("card_head", "")),
+                       "card_sub": str(sl.get("card_sub", ""))})
+    if not slides:
+        slides = [{"tag": "01", "hero": "Confidence", "sub": "Measured 0-1000.", "card_head": "The signal.", "card_sub": "Not a survey."}]
+    return {
+        "cover": {"label": str(cov.get("label", "CONFISCORE")),
+                  "headline": _coerce_headline(cov.get("headline"), [["Confidence", "white"], ["measured.", "green"]]),
+                  "sub": str(cov.get("sub", ""))},
+        "slides": slides,
+        "cta": {"label": str(cta.get("label", "THE FIX")),
+                "headline": _coerce_headline(cta.get("headline"), [["Measure", "white"], ["confidence.", "green"]]),
+                "sub": str(cta.get("sub", "")), "button": str(cta.get("button", "confiscore.com"))},
+    }
+
+@app.post("/api/poster/template")
+def template_poster(req: TemplatePosterRequest):
+    fmt = "carousel" if req.format == "carousel" else "single"
+    prompt = _structure_prompt(req.post_text or req.description, req.voice, fmt)
+    spec, err = None, None
+    for _ in range(3):   # Claude occasionally returns slightly-off JSON — retry
+        raw = claude_complete(prompt, json_mode=True, temperature=0.6, max_tokens=1600, session=req.session_id or "")
+        try:
+            spec = json.loads(_extract_json(raw)); break
+        except Exception as e:
+            err = e
+    if spec is None:
+        raise HTTPException(500, f"Could not parse poster content: {err}")
+    try:
+        if fmt == "carousel":
+            fn = poster_template.render_carousel(_coerce_carousel(spec), UPLOAD_DIR)
+        else:
+            fn = poster_template.render_single(_coerce_single(spec), UPLOAD_DIR)
+    except Exception as e:
+        raise HTTPException(500, f"Poster render failed: {e}")
+    b64 = base64.b64encode((UPLOAD_DIR / fn).read_bytes()).decode()
+    return {"path": fn, "url": f"data:image/png;base64,{b64}", "format": fmt}
 
 
 # ── Token usage endpoints ──────────────────────────────────────────────────────
