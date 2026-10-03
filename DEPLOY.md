@@ -1,5 +1,35 @@
 # Deploying Confiscore Social Poster (free, shareable link)
 
+> ## ⚠️ Current production deployment
+>
+> The live app is **https://poster.confiscore.com** (behind Cloudflare). The Render
+> instructions below are the ORIGINAL setup and are kept for reference — the URLs in
+> them are stale. For the live deployment, what matters is:
+>
+> **LinkedIn app:** Client ID `86e5hcl0uixzir`. Its **Auth → Authorized redirect URLs**
+> must contain this EXACT string, or connecting fails with
+> *"Bummer, something went wrong — The redirect_uri does not match the registered value"*:
+>
+> ```
+> https://poster.confiscore.com/api/auth/linkedin/callback
+> ```
+>
+> **Required env var:** `BACKEND_URL=https://poster.confiscore.com`
+>
+> `FRONTEND_URL` no longer needs setting — it now falls back to `BACKEND_URL`, because
+> FastAPI serves the built frontend on the same origin. (Before that fix it fell back to
+> `http://localhost:5173`, so a successful OAuth connect redirected the user to their own
+> machine and showed `ERR_CONNECTION_REFUSED`. The connection was still saved.)
+>
+> **`DATA_DIR` must point at persistent storage.** The SQLite DB lives at
+> `DATA_DIR/confiscore.db` and defaults to the backend folder — inside the container. If
+> that is not a mounted volume, every rebuild wipes the LinkedIn connection, all drafts,
+> and the saved credentials, and the whole team has to reconnect.
+>
+> **Products required on the LinkedIn app:** *Sign In with LinkedIn using OpenID Connect*
+> (for `openid profile email`) and *Share on LinkedIn* (for `w_member_social`).
+
+
 This deploys the whole app — frontend + API — as **one free Render web service** with a
 single URL you share with your team. A team password gates access.
 

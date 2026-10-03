@@ -52,10 +52,15 @@ IMGBB_API_KEY    = os.environ.get("IMGBB_API_KEY", "")  # public-URL host for In
 # Render injects RENDER_EXTERNAL_URL automatically, so a deploy needs zero URL config.
 _render_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
 # Where the backend itself is reachable (used for OAuth callback URLs).
-BACKEND_URL  = os.environ.get("BACKEND_URL",  _render_url or "http://localhost:8000").rstrip("/")
+# An explicit BACKEND_URL means a real deployment (custom domain, EC2, etc.).
+_backend_env = os.environ.get("BACKEND_URL", "").rstrip("/")
+BACKEND_URL  = _backend_env or _render_url or "http://localhost:8000"
 # Where the user-facing app lives (used to redirect back after OAuth).
-# In production the frontend is the same origin as the backend; locally it's Vite on 5173.
-FRONTEND_URL = os.environ.get("FRONTEND_URL", _render_url or "http://localhost:5173").rstrip("/")
+# In production FastAPI serves the built frontend on the SAME origin as the API, so fall
+# back to BACKEND_URL. Defaulting to Vite's localhost on a hosted deploy sends the user's
+# browser to their own machine after a successful OAuth connect (ERR_CONNECTION_REFUSED).
+FRONTEND_URL = (os.environ.get("FRONTEND_URL", "").rstrip("/")
+                or _render_url or _backend_env or "http://localhost:5173")
 # Optional shared password gate — when unset (local dev) the app is open as before.
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 # Where persistent data (SQLite DB + uploads) lives. Defaults to the backend folder.
