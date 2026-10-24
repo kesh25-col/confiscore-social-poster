@@ -270,6 +270,7 @@ class UpdateDraftRequest(BaseModel):
     image_path: Optional[str] = None
     status: Optional[str] = None
     scheduled_for: Optional[str] = None
+    versions: Optional[dict] = None     # resend the whole set when the copy was edited
 
 class PostNowRequest(BaseModel):
     post_id: int
@@ -692,6 +693,8 @@ async def update_draft(post_id: int, req: UpdateDraftRequest):
         if not row:
             raise HTTPException(404, "Draft not found")
         updates = {}
+        if req.versions is not None:
+            updates["versions"] = json.dumps(req.versions)
         if req.selected_version is not None:
             updates["selected_version"] = req.selected_version
         if req.image_path is not None:

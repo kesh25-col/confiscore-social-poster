@@ -479,6 +479,48 @@ textarea::placeholder, input::placeholder { color: #A6ACBC; }
   color: var(--navy); letter-spacing: 0; text-transform: none;
 }
 
+.preview-title { display: inline-flex; align-items: center; gap: 8px; }
+
+.preview-charcount {
+  font-size: 11px; font-weight: 500; color: var(--white-muted);
+}
+
+.preview-edited {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em;
+  padding: 2px 7px; border-radius: 999px;
+  color: var(--accent); background: var(--accent-glow);
+}
+
+.preview-revert {
+  font-family: var(--font-body);
+  font-size: 11px; font-weight: 600; color: var(--white-muted);
+  background: none; border: none; padding: 0; cursor: pointer;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.preview-revert:hover { color: var(--accent); }
+
+/* Inline post-text editing. The textarea inherits each mock's own type styles
+   (set by .li-mock-body / .ig-mock-caption) so the preview stays faithful;
+   only hover and focus reveal that it is a field. */
+.editable-body {
+  display: block; width: 100%;
+  font-family: inherit;
+  border: none; outline: none; resize: none; overflow: hidden;
+  background: transparent;
+  border-radius: 6px;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+.editable-body:hover { background: rgba(0, 0, 0, 0.035); }
+.editable-body:focus {
+  background: #fff;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.editable-body::placeholder { color: #9AA0A6; }
+
+.ig-mock-caption-user {
+  padding: 2px 13px 0; font-size: 13px; font-weight: 600; color: #1A1A1A;
+}
+
 .platform-tabs { display: flex; gap: 6px; }
 
 .plat-tab {

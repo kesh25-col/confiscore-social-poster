@@ -28,6 +28,8 @@ export default function App() {
   const [generating, setGenerating] = useState(false)
   const [generationStep, setGenerationStep] = useState(0)
   const [versions, setVersions] = useState(null)
+  // What Claude originally wrote, untouched — lets "revert" undo manual edits.
+  const [baseline, setBaseline] = useState(null)
   const [selectedVersion, setSelectedVersion] = useState(null)
   const [previewPlatform, setPreviewPlatform] = useState('li')
   const [imageUrl, setImageUrl] = useState(null)
@@ -138,6 +140,7 @@ export default function App() {
 
     setGenerating(true)
     setVersions(null)
+    setBaseline(null)
     setSelectedVersion(null)
     setSavedDraftId(null)
     setGenerationStep(1)
@@ -154,6 +157,7 @@ export default function App() {
         session_id: sid
       })
       setVersions(data.versions)
+      setBaseline(data.versions)
       setSelectedVersion(Object.keys(data.versions)[0])
       setPreviewPlatform(platforms[0])
       showToast(data.search_used ? '✓ Generated with real-time web data' : '✓ Generated successfully', 'success')
@@ -172,14 +176,22 @@ export default function App() {
     if (!versions) return
     setSaving(true)
     try {
-      const { data } = await axios.post(`${API}/drafts`, {
-        description,
-        platforms,
-        versions,
-        selected_version: selectedVersion,
-        image_path: imagePath
-      })
-      setSavedDraftId(data.id)
+      if (savedDraftId) {
+        await axios.patch(`${API}/drafts/${savedDraftId}`, {
+          versions,
+          selected_version: selectedVersion,
+          image_path: imagePath
+        })
+      } else {
+        const { data } = await axios.post(`${API}/drafts`, {
+          description,
+          platforms,
+          versions,
+          selected_version: selectedVersion,
+          image_path: imagePath
+        })
+        setSavedDraftId(data.id)
+      }
       showToast('Saved as draft', 'success')
       loadDrafts()
     } catch (e) {
@@ -200,6 +212,7 @@ export default function App() {
     try {
       if (savedDraftId) {
         await axios.patch(`${API}/drafts/${savedDraftId}`, {
+          versions,
           selected_version: selectedVersion,
           image_path: imagePath,
           scheduled_for: when.toISOString(),
@@ -241,11 +254,17 @@ export default function App() {
       return
     }
 
-    // Save draft first if not saved
+    // Publishing reads the stored draft, so sync the on-screen copy first.
     let draftId = savedDraftId
-    if (!draftId) {
-      setSaving(true)
-      try {
+    setSaving(true)
+    try {
+      if (draftId) {
+        await axios.patch(`${API}/drafts/${draftId}`, {
+          versions,
+          selected_version: selectedVersion,
+          image_path: imagePath
+        })
+      } else {
         const { data } = await axios.post(`${API}/drafts`, {
           description, platforms, versions,
           selected_version: selectedVersion,
@@ -253,13 +272,13 @@ export default function App() {
         })
         draftId = data.id
         setSavedDraftId(draftId)
-      } catch (e) {
-        showToast('Failed to save draft before posting', 'error')
-        setSaving(false)
-        return
       }
+    } catch (e) {
+      showToast('Failed to save draft before posting', 'error')
       setSaving(false)
+      return
     }
+    setSaving(false)
 
     setPosting(true)
     try {
@@ -289,6 +308,7 @@ export default function App() {
     setDescription(draft.description)
     setPlatforms(draft.platforms || ['li'])
     setVersions(draft.versions)
+    setBaseline(draft.versions)
     setSelectedVersion(draft.selected_version || Object.keys(draft.versions || {})[0])
     setPreviewPlatform((draft.platforms || ['li'])[0])
     setSavedDraftId(draft.id)
@@ -306,6 +326,27 @@ export default function App() {
   const selectedContent = versions && selectedVersion
     ? versions[selectedVersion]?.content
     : null
+
+  // Hand-edit the copy for one platform of the selected version. Drafts and
+  // publishing both read from `versions`, so the edit carries all the way through.
+  const editText = useCallback((platform, next) => {
+    setVersions(prev => {
+      const v = prev?.[selectedVersion]
+      if (!v) return prev
+      return { ...prev, [selectedVersion]: { ...v, content: { ...v.content, [platform]: next } } }
+    })
+  }, [selectedVersion])
+
+  const revertText = useCallback((platform) => {
+    const original = baseline?.[selectedVersion]?.content?.[platform]
+    if (original !== undefined) editText(platform, original)
+  }, [baseline, selectedVersion, editText])
+
+  const textEdited = Boolean(
+    versions && selectedVersion && baseline &&
+    versions[selectedVersion]?.content?.[previewPlatform] !==
+      baseline[selectedVersion]?.content?.[previewPlatform]
+  )
 
   // Gate: while probing, show a minimal splash; if locked, show login.
   if (authState === 'loading') {
@@ -509,6 +550,9 @@ export default function App() {
                         voice={selectedVersion}
                         sessionId={sessionId}
                         onUsage={() => { refreshUsage(); refreshPostUsage(sessionId) }}
+                        onEditText={editText}
+                        onRevertText={revertText}
+                        textEdited={textEdited}
                       />
                     )}
                   </>
