@@ -499,23 +499,37 @@ textarea::placeholder, input::placeholder { color: #A6ACBC; }
 }
 .preview-revert:hover { color: var(--accent); }
 
-/* Inline post-text editing. The textarea inherits each mock's own type styles
-   (set by .li-mock-body / .ig-mock-caption) so the preview stays faithful;
-   only hover and focus reveal that it is a field. */
-.editable-body {
-  display: block; width: 100%;
+/* The Edit text toggle, sat with the platform tabs. */
+.btn-edit-text {
+  font-family: var(--font-body);
+  font-size: 12px; font-weight: 600; letter-spacing: 0;
+  padding: 6px 14px; border-radius: 999px;
+  border: 1px solid var(--border2);
+  background: var(--bg2); cursor: pointer;
+  transition: all 0.18s; text-transform: none;
+  color: var(--white-muted);
+  margin-right: 4px;
+}
+.btn-edit-text:hover { border-color: #C2C8D6; color: var(--navy); }
+.btn-edit-text.active {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+
+/* The post text while editing. It keeps each mock's own type styles (set by
+   .li-mock-body / .ig-mock-caption) so the copy stays true to the preview,
+   but reads unmistakably as a field. */
+.post-body-field {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 0 10px 8px;
   font-family: inherit;
-  border: none; outline: none; resize: none; overflow: hidden;
-  background: transparent;
-  border-radius: 6px;
-  transition: background 0.12s ease, box-shadow 0.12s ease;
+  border: 1px solid var(--accent);
+  outline: none; resize: none; overflow: hidden;
+  background: #FFFFFF;
+  border-radius: 8px;
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
-.editable-body:hover { background: rgba(0, 0, 0, 0.035); }
-.editable-body:focus {
-  background: #fff;
-  box-shadow: 0 0 0 2px var(--accent);
-}
-.editable-body::placeholder { color: #9AA0A6; }
+.post-body-field::placeholder { color: #9AA0A6; }
 
 .ig-mock-caption-user {
   padding: 2px 13px 0; font-size: 13px; font-weight: 600; color: #1A1A1A;

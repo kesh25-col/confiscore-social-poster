@@ -22,21 +22,33 @@ async function rasterizeSvgToPng(svgDataUrl) {
   )
 }
 
-// A textarea that borrows the mock's own typography and grows with its content,
-// so the preview stays WYSIWYG while being directly editable.
-function EditableBody({ value, onChange, className, placeholder }) {
+function extractHashtags(text) {
+  return (text.match(/#\w+/g) || []).join(' ')
+}
+function stripHashtags(text) {
+  return text.replace(/#\w+/g, '').trim().replace(/\s{2,}/g, ' ')
+}
+
+// The post body. Reading renders the text exactly as it will be published;
+// editing swaps in a visible field that keeps the mock's own typography and
+// grows with its content. Driven by the Edit button in the preview header.
+function PostBody({ value, onChange, className, placeholder, editing }) {
   const ref = useRef(null)
   useEffect(() => {
     const el = ref.current
     if (!el) return
     el.style.height = 'auto'
     el.style.height = `${el.scrollHeight}px`
-  }, [value])
+  }, [value, editing])
+
+  if (!editing) return <div className={className}>{value || ''}</div>
+
   return (
     <textarea
       ref={ref}
       rows={1}
-      className={`${className} editable-body`}
+      autoFocus
+      className={`${className} post-body-field`}
       value={value || ''}
       placeholder={placeholder}
       onChange={e => onChange?.(e.target.value)}
@@ -44,7 +56,7 @@ function EditableBody({ value, onChange, className, placeholder }) {
   )
 }
 
-function LinkedInMock({ text, imageUrl, onImageClick, onTextChange }) {
+function LinkedInMock({ text, imageUrl, onImageClick, onTextChange, editing }) {
   return (
     <div className="li-mock">
       <div className="li-mock-card">
@@ -56,10 +68,11 @@ function LinkedInMock({ text, imageUrl, onImageClick, onTextChange }) {
             <div className="li-mock-time">Just now · 🌐</div>
           </div>
         </div>
-        <EditableBody
+        <PostBody
           className="li-mock-body"
           value={text}
           onChange={onTextChange}
+          editing={editing}
           placeholder="Write your post..."
         />
         {imageUrl ? (
@@ -86,7 +99,7 @@ function LinkedInMock({ text, imageUrl, onImageClick, onTextChange }) {
   )
 }
 
-function FacebookMock({ text, imageUrl, onImageClick, onTextChange }) {
+function FacebookMock({ text, imageUrl, onImageClick, onTextChange, editing }) {
   return (
     <div className="li-mock">
       <div className="li-mock-card">
@@ -98,10 +111,11 @@ function FacebookMock({ text, imageUrl, onImageClick, onTextChange }) {
             <div className="li-mock-time">Just now · 🌐</div>
           </div>
         </div>
-        <EditableBody
+        <PostBody
           className="li-mock-body"
           value={text}
           onChange={onTextChange}
+          editing={editing}
           placeholder="Write your post..."
         />
         {imageUrl ? (
@@ -128,7 +142,7 @@ function FacebookMock({ text, imageUrl, onImageClick, onTextChange }) {
   )
 }
 
-function InstagramMock({ text, imageUrl, onImageClick, onTextChange }) {
+function InstagramMock({ text, imageUrl, onImageClick, onTextChange, editing }) {
   return (
     <div className="ig-mock">
       <div className="ig-mock-card">
@@ -156,13 +170,25 @@ function InstagramMock({ text, imageUrl, onImageClick, onTextChange }) {
           <svg viewBox="0 0 24 24" strokeWidth="1.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
         </div>
         <div className="ig-mock-likes">128 likes</div>
-        <div className="ig-mock-caption-user">confiscore</div>
-        <EditableBody
-          className="ig-mock-caption"
-          value={text}
-          onChange={onTextChange}
-          placeholder="Write your caption..."
-        />
+        {editing ? (
+          <>
+            <div className="ig-mock-caption-user">confiscore</div>
+            <PostBody
+              className="ig-mock-caption"
+              value={text}
+              onChange={onTextChange}
+              editing
+              placeholder="Write your caption..."
+            />
+          </>
+        ) : (
+          <>
+            <div className="ig-mock-caption"><strong>confiscore </strong>{stripHashtags(text || '')}</div>
+            {extractHashtags(text || '') && (
+              <div className="ig-mock-hashtags">{extractHashtags(text || '')}</div>
+            )}
+          </>
+        )}
       </div>
     </div>
   )
@@ -180,6 +206,7 @@ export default function Preview({
   const [aiModel, setAiModel] = useState(null)
   const [aiFormat, setAiFormat] = useState('single')   // 'single' | 'carousel'
   const [aiImagePath, setAiImagePath] = useState(null) // server path to rasterized PNG
+  const [editing, setEditing] = useState(false)        // text edit mode, off by default
 
   // Carousel is LinkedIn-only — fall back to single poster on Instagram
   useEffect(() => {
@@ -191,6 +218,8 @@ export default function Preview({
   const handleImageClick = () => fileInputRef.current?.click()
 
   const handleTextChange = (next) => onEditText?.(previewPlatform, next)
+
+  const selectPlatform = (p) => { setEditing(false); setPreviewPlatform(p) }
 
   const handleFileChange = async (e) => {
     const file = e.target.files[0]
@@ -246,24 +275,35 @@ const text = content?.[previewPlatform] || content?.[platforms[0]] || ''
         <div className="preview-header">
           <span className="preview-title">
             Platform Preview
-            <span className="preview-charcount">{(text || '').length} chars</span>
             {textEdited && <span className="preview-edited">edited</span>}
-            {textEdited && (
-              <button
-                className="preview-revert"
-                onClick={() => onRevertText?.(previewPlatform)}
-                title="Restore the text Claude generated"
-              >
-                revert
-              </button>
-            )}
           </span>
           <div className="platform-tabs">
+            <button
+              className={`btn-edit-text ${editing ? 'active' : ''}`}
+              onClick={() => setEditing(e => !e)}
+              title={editing ? 'Finish editing' : 'Edit the post text'}
+            >
+              {editing ? '✓ Done' : '✎ Edit text'}
+            </button>
+            {editing && (
+              <>
+                <span className="preview-charcount">{(text || '').length} chars</span>
+                {textEdited && (
+                  <button
+                    className="preview-revert"
+                    onClick={() => onRevertText?.(previewPlatform)}
+                    title="Restore the text Claude generated"
+                  >
+                    revert
+                  </button>
+                )}
+              </>
+            )}
             {platforms.map(p => (
               <button
                 key={p}
                 className={`plat-tab ${p} ${previewPlatform === p ? 'active' : ''}`}
-                onClick={() => setPreviewPlatform(p)}
+                onClick={() => selectPlatform(p)}
               >
                 {p === 'li' ? 'LinkedIn' : p === 'fb' ? 'Facebook' : 'Instagram'}
               </button>
@@ -274,10 +314,10 @@ const text = content?.[previewPlatform] || content?.[platforms[0]] || ''
         <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFileChange} />
 
         {previewPlatform === 'li'
-          ? <LinkedInMock text={text} imageUrl={displayImage} onImageClick={handleImageClick} onTextChange={handleTextChange} />
+          ? <LinkedInMock text={text} imageUrl={displayImage} onImageClick={handleImageClick} onTextChange={handleTextChange} editing={editing} />
           : previewPlatform === 'fb'
-          ? <FacebookMock text={text} imageUrl={displayImage} onImageClick={handleImageClick} onTextChange={handleTextChange} />
-          : <InstagramMock text={text} imageUrl={displayImage} onImageClick={handleImageClick} onTextChange={handleTextChange} />
+          ? <FacebookMock text={text} imageUrl={displayImage} onImageClick={handleImageClick} onTextChange={handleTextChange} editing={editing} />
+          : <InstagramMock text={text} imageUrl={displayImage} onImageClick={handleImageClick} onTextChange={handleTextChange} editing={editing} />
         }
       </div>
 
